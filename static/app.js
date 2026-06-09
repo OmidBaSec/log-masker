@@ -207,6 +207,37 @@ function modelFor(pid) {
   return (CONFIG.provider_models || {})[pid] || (REGISTRY[pid] || {}).default_model || "";
 }
 
+// Live model lists fetched from each provider's API (provider -> [ids]).
+const LIVE_MODELS = {};
+const CUSTOM = "__custom__";
+
+// Candidate models for a provider: live list if fetched, else the built-in
+// list; always include the currently-saved model so it shows even if custom.
+function modelOptionsFor(pid) {
+  const live = LIVE_MODELS[pid];
+  const base = (live && live.length) ? live.slice() : ((REGISTRY[pid] || {}).models || []).slice();
+  const saved = modelFor(pid);
+  if (saved && !base.includes(saved)) base.unshift(saved);
+  return base;
+}
+
+// Pull the live model list from the provider's API and re-render dropdowns.
+async function refreshModels(pid, { announce = false } = {}) {
+  try {
+    const d = await (await fetch("/models?provider=" + encodeURIComponent(pid))).json();
+    if (d.models && d.models.length) {
+      LIVE_MODELS[pid] = d.models;
+      if (selectedProvider === pid) renderModalForProvider();
+      if (CONFIG.provider === pid) renderActiveProvider();
+      if (announce) setupMsg(`✓ Loaded ${d.models.length} live models from the provider.`, "ok");
+    } else if (announce) {
+      setupMsg(d.error || "No models returned.", "err");
+    }
+  } catch (e) {
+    if (announce) setupMsg(e.message, "err");
+  }
+}
+
 // Populate the inline provider + model dropdowns (configured providers only).
 function renderActiveProvider() {
   const pSel = $("activeProviderSelect");
@@ -237,11 +268,12 @@ function renderActiveProvider() {
   pSel.value = CONFIG.provider;
 
   // Model dropdown: only for providers that expose a model list. Shows this
-  // provider's saved default model.
+  // provider's saved default model (built-in or live-fetched).
   const meta = REGISTRY[CONFIG.provider];
-  if (meta && meta.models.length) {
+  const opts = modelOptionsFor(CONFIG.provider);
+  if (meta && meta.auth !== "oauth" && CONFIG.provider !== "azure" && opts.length) {
     mSel.innerHTML = "";
-    for (const m of meta.models) {
+    for (const m of opts) {
       const o = document.createElement("option");
       o.value = m; o.textContent = m;
       mSel.appendChild(o);
@@ -305,17 +337,27 @@ function renderModalForProvider() {
   $("providerNote").textContent = meta.note || "";
   $("providerNote").style.display = meta.note ? "block" : "none";
 
-  // Model dropdown (or free-text fallback when the provider lists none, e.g. Azure).
+  // Model dropdown: built-in or live-fetched options, plus a "Custom…" entry.
   const sel = $("modelSelect");
+  const custom = $("modelCustom");
+  custom.classList.add("hidden");
   sel.innerHTML = "";
-  if (meta.models.length) {
-    for (const m of meta.models) {
+  const hasModels = meta.models.length || (LIVE_MODELS[selectedProvider] || []).length;
+  if (hasModels) {
+    for (const m of modelOptionsFor(selectedProvider)) {
       const o = document.createElement("option");
       o.value = m; o.textContent = m;
       sel.appendChild(o);
     }
+    const co = document.createElement("option");
+    co.value = CUSTOM; co.textContent = "Custom…";
+    sel.appendChild(co);
     sel.disabled = false;
     sel.value = modelFor(selectedProvider);
+    // Auto-fetch the live list once per provider if a key is configured.
+    if (CONFIGURED[selectedProvider] && !LIVE_MODELS[selectedProvider]) {
+      refreshModels(selectedProvider);
+    }
   } else {
     const o = document.createElement("option");
     o.value = ""; o.textContent = "(set via deployment name below)";
@@ -402,11 +444,35 @@ $("openSetupInline").addEventListener("click", openSetup);
 // Per-provider default model — save immediately when changed (no Save needed).
 // (renderModalForProvider sets .value programmatically, which doesn't fire change.)
 $("modelSelect").addEventListener("change", async (e) => {
+  const custom = $("modelCustom");
+  if (e.target.value === CUSTOM) {
+    custom.classList.remove("hidden");
+    custom.value = "";
+    custom.focus();
+    return;
+  }
+  custom.classList.add("hidden");
   if (!e.target.value) return;
-  await persistConfig({ provider_models: { [selectedProvider]: e.target.value } });
+  await saveProviderModel(e.target.value);
+});
+
+// Free-text custom model id.
+$("modelCustom").addEventListener("change", async (e) => {
+  const v = e.target.value.trim();
+  if (v) await saveProviderModel(v);
+});
+
+async function saveProviderModel(model) {
+  await persistConfig({ provider_models: { [selectedProvider]: model } });
   renderProviderCards();
   renderActiveProvider();
-  setupMsg(`✓ Default model for ${REGISTRY[selectedProvider].label}: ${e.target.value}`, "ok");
+  setupMsg(`✓ Default model for ${REGISTRY[selectedProvider].label}: ${model}`, "ok");
+}
+
+// Manual refresh of the live model list.
+$("refreshModelsBtn").addEventListener("click", () => {
+  setupMsg("Fetching live model list…");
+  refreshModels(selectedProvider, { announce: true });
 });
 
 // Default provider — apply immediately when ticked.

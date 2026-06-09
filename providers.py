@@ -9,6 +9,7 @@ No masking happens here -- callers pass already-masked text. Keys are passed in
 by the caller (resolved from the OS keychain), never read here.
 """
 
+import re
 import json
 import requests
 from typing import Dict, List, Optional
@@ -177,6 +178,63 @@ def call(provider: str, api_key: str, model: str, system: str,
     if not api_key:
         raise ProviderError("No API key configured for this provider.")
     return _CALLERS[provider](api_key, model, system, user_text, cfg or {})
+
+
+# ---------------------------------------------------------------------------
+# Live model listing — query each provider's catalog so the dropdown never goes
+# stale. Best-effort filtering to chat/text models.
+# ---------------------------------------------------------------------------
+_OPENAI_EXCLUDE = ("audio", "realtime", "transcribe", "tts", "image",
+                   "embedding", "search", "moderation", "dall", "whisper")
+_GOOGLE_EXCLUDE = ("image", "tts", "embedding", "aqa", "vision", "live",
+                   "computer-use", "robotics", "nano-banana", "lyria",
+                   "deep-research")
+
+
+def _get(url: str, headers: dict = None) -> dict:
+    r = requests.get(url, headers=headers or {}, timeout=30)
+    if r.status_code != 200:
+        raise ProviderError(f"List models failed {r.status_code}: {r.text[:300]}")
+    return r.json()
+
+
+def list_models(provider: str, api_key: str, cfg: Optional[dict] = None) -> List[str]:
+    """Return chat/text model IDs currently available for `provider`'s key."""
+    if provider == "anthropic":
+        data = _get("https://api.anthropic.com/v1/models",
+                    {"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+        return [m["id"] for m in data.get("data", [])]
+
+    if provider == "openai":
+        data = _get("https://api.openai.com/v1/models",
+                    {"Authorization": f"Bearer {api_key}"})
+        out = []
+        for m in data.get("data", []):
+            mid = m.get("id", "")
+            low = mid.lower()
+            if any(x in low for x in _OPENAI_EXCLUDE):
+                continue
+            if low.startswith(("gpt", "chatgpt")) or re.match(r"^o\d", low):
+                out.append(mid)
+        return sorted(set(out))
+
+    if provider == "google":
+        data = _get("https://generativelanguage.googleapis.com/v1beta/models"
+                    f"?key={api_key}&pageSize=200")
+        out = []
+        for m in data.get("models", []):
+            if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                continue
+            name = m.get("name", "").replace("models/", "")
+            low = name.lower()
+            if any(x in low for x in _GOOGLE_EXCLUDE):
+                continue
+            if low.startswith(("gemini", "gemma")):
+                out.append(name)
+        return out
+
+    # azure (deployment-based) and m365copilot have no listable chat catalog here.
+    return []
 
 
 def public_registry() -> dict:

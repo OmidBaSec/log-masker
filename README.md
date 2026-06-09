@@ -50,9 +50,16 @@ No client secret is needed (public client + PKCE). Tokens are cached locally in
 > key-based path if you don't specifically need M365 Copilot's tenant grounding.
 
 API keys are stored in your **OS keychain** (via `keyring`), never in the
-browser or in any file. Non-secret settings (selected provider, model, Azure
-endpoint) live in a local `app_config.json` (git-ignored). **Test connection**
-in Setup sends a one-word ping to verify the key/model work.
+browser or in any file. Non-secret settings (default provider, per-provider
+default model, Azure endpoint) live in a local `app_config.json` (git-ignored).
+**Test connection** in Setup sends a one-word ping to verify the key/model work.
+
+**Default provider & model:** Setup lets you pick a default provider (★) and a
+default model **per provider**, saved the moment you change them. The model
+dropdown is populated **live from each provider's own catalog API** using your
+key (click ↻ to refresh, or it auto-loads), so it never goes stale — and a
+**Custom…** option lets you type any model ID. For Azure, the model is your
+deployment name.
 
 ```
 raw logs ──► [ local mask ] ──► masked logs ──► AI provider

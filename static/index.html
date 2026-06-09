@@ -111,7 +111,13 @@
       <p id="providerNote" class="provider-note"></p>
 
       <label class="field" id="modelField">Default model for this provider
-        <select id="modelSelect"></select>
+        <div class="model-pick">
+          <select id="modelSelect"></select>
+          <button id="refreshModelsBtn" class="ghost-btn" type="button"
+            title="Fetch the live model list from your API key">↻</button>
+        </div>
+        <input id="modelCustom" class="hidden" type="text" autocomplete="off"
+          placeholder="type a model id, e.g. gemini-3.5-flash" />
       </label>
 
       <label class="default-toggle" id="defaultToggle">

@@ -239,6 +239,27 @@ def set_config(req: ConfigRequest):
     return {"ok": True, "config": public_config(load_config())}
 
 
+@app.get("/models")
+def list_models(provider: str):
+    """Live model list for a provider, fetched from its catalog API using the
+    saved key. Empty list + a reason if unavailable; the UI falls back to the
+    built-in list and always allows a custom model."""
+    if provider not in providers.PROVIDERS:
+        raise HTTPException(400, f"Unknown provider: {provider}")
+    if provider in ("m365copilot", "azure"):
+        return {"models": [], "error": "This provider has no listable catalog."}
+    api_key = get_api_key(provider)
+    if not api_key:
+        return {"models": [], "error": "No API key saved for this provider."}
+    try:
+        models = providers.list_models(provider, api_key, load_config())
+    except providers.ProviderError as e:
+        return {"models": [], "error": str(e)}
+    except Exception as e:
+        return {"models": [], "error": str(e)[:300]}
+    return {"models": models}
+
+
 @app.post("/save-key")
 def save_key(req: KeyRequest):
     if req.provider not in providers.PROVIDERS:
