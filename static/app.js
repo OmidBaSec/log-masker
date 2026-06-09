@@ -398,6 +398,25 @@ function openSetup() {
 }
 $("settingsBtn").addEventListener("click", openSetup);
 $("openSetupInline").addEventListener("click", openSetup);
+
+// Per-provider default model — save immediately when changed (no Save needed).
+// (renderModalForProvider sets .value programmatically, which doesn't fire change.)
+$("modelSelect").addEventListener("change", async (e) => {
+  if (!e.target.value) return;
+  await persistConfig({ provider_models: { [selectedProvider]: e.target.value } });
+  renderProviderCards();
+  renderActiveProvider();
+  setupMsg(`✓ Default model for ${REGISTRY[selectedProvider].label}: ${e.target.value}`, "ok");
+});
+
+// Default provider — apply immediately when ticked.
+$("makeDefaultChk").addEventListener("change", async (e) => {
+  if (!e.target.checked) return;
+  await persistConfig({ provider: selectedProvider, make_default: true });
+  renderModalForProvider();
+  renderActiveProvider();
+  setupMsg(`✓ ${REGISTRY[selectedProvider].label} is now your default provider.`, "ok");
+});
 $("closeSettings").addEventListener("click", () => modal.classList.add("hidden"));
 modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
