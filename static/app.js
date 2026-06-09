@@ -82,9 +82,17 @@ function showTab(name) {
 }
 
 // --- Preview (mask only, no API call) -----------------------------------
-$("previewBtn").addEventListener("click", async () => {
+// Runs locally on the server; only updates the "Sent to AI" + "Mapping" tabs.
+async function runPreview() {
   const logs = $("logs").value.trim();
-  if (!logs) return setStatus("Paste some logs first.", "err");
+  if (!logs) {
+    $("sent").textContent = "";
+    fillMapping({});
+    $("redBadge").textContent = "No analysis yet.";
+    $("redBadge").className = "redaction-badge";
+    setStatus("");
+    return;
+  }
   setStatus("Masking locally…");
   try {
     const r = await fetch("/preview", {
@@ -103,7 +111,23 @@ $("previewBtn").addEventListener("click", async () => {
   } catch (e) {
     setStatus(e.message, "err");
   }
-});
+}
+
+// Manual button still works as an explicit refresh.
+$("previewBtn").addEventListener("click", runPreview);
+
+// Auto-preview: re-mask shortly after the user stops typing/pasting, or when
+// the masking options change — no need to click "Preview masking".
+let previewTimer = null;
+function scheduleAutoPreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreview, 350);
+}
+$("logs").addEventListener("input", scheduleAutoPreview);
+$("customTerms").addEventListener("input", scheduleAutoPreview);
+document.querySelectorAll(".cats input").forEach((c) =>
+  c.addEventListener("change", scheduleAutoPreview)
+);
 
 // --- Analyse (mask -> Claude -> un-mask) --------------------------------
 $("analyzeBtn").addEventListener("click", async () => {
