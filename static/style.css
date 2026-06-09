@@ -167,6 +167,42 @@ button { cursor: pointer; font-size: 13px; border-radius: 10px; border: 1px soli
   border-radius: 10px; padding: 10px; font-family: var(--mono);
 }
 .key-state { font-size: 12px; color: var(--muted); min-height: 16px; }
-.modal-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.modal-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .modal-actions .spacer { flex: 1; }
 code { background: #0b0f16; padding: 1px 5px; border-radius: 5px; font-size: 0.9em; }
+
+/* Active-provider chip on the main page */
+.provider-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.provider-chip {
+  font-family: var(--mono); font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text);
+}
+.provider-chip.ok { border-color: rgba(63,185,80,0.5); color: #aef0b8; }
+.provider-chip.warn { border-color: rgba(210,153,34,0.6); color: #f0d9a0; }
+.link-btn {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font-size: 12px; text-decoration: underline; padding: 0;
+}
+
+/* Setup modal */
+.setup-card { width: min(560px, 94vw); max-height: 90vh; overflow-y: auto; }
+.setup-head { display: flex; align-items: center; justify-content: space-between; }
+.setup-head h3 { margin: 0; }
+.field-label { display: block; font-size: 12px; color: var(--muted); margin: 16px 0 6px; }
+.provider-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.provider-card {
+  display: flex; flex-direction: column; gap: 4px; align-items: flex-start;
+  background: #0b0f16; border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 12px; cursor: pointer; text-align: left; color: var(--text);
+}
+.provider-card:hover { border-color: var(--accent); }
+.provider-card.selected { border-color: var(--accent); background: rgba(110,168,254,0.10); }
+.pc-label { font-size: 13px; font-weight: 600; }
+.pc-state { font-size: 11px; }
+.pc-state.ok { color: var(--green); }
+.pc-state.warn { color: var(--amber); }
+.provider-note {
+  font-size: 12px; color: var(--amber); margin: 10px 0 0;
+  border-left: 2px solid rgba(210,153,34,0.5); padding-left: 10px;
+}
+select#modelSelect { width: 100%; }

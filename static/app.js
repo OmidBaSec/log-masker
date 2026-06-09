@@ -129,13 +129,13 @@ document.querySelectorAll(".cats input").forEach((c) =>
   c.addEventListener("change", scheduleAutoPreview)
 );
 
-// --- Analyse (mask -> Claude -> un-mask) --------------------------------
+// --- Analyse (mask -> provider -> un-mask) ------------------------------
 $("analyzeBtn").addEventListener("click", async () => {
   const logs = $("logs").value.trim();
   if (!logs) return setStatus("Paste some logs first.", "err");
   const btn = $("analyzeBtn");
   btn.disabled = true;
-  setStatus("Masking locally and sending masked logs to Claude…");
+  setStatus("Masking locally and sending masked logs to the AI…");
   try {
     const r = await fetch("/analyze", {
       method: "POST",
@@ -144,7 +144,6 @@ $("analyzeBtn").addEventListener("click", async () => {
         logs,
         categories: selectedCategories(),
         custom_terms: customTerms(),
-        model: $("model").value,
         instructions: $("instructions").value.trim() || null,
       }),
     });
@@ -158,7 +157,7 @@ $("analyzeBtn").addEventListener("click", async () => {
       `${d.masked_count} value(s) masked before sending. Highlighted values below were restored locally.`;
     $("redBadge").className = "redaction-badge active";
     showTab("restored");
-    setStatus(`Done — analysed with ${$("model").value}.`, "ok");
+    setStatus(`Done — analysed with ${d.model}.`, "ok");
   } catch (e) {
     setStatus(e.message, "err");
   } finally {
@@ -166,40 +165,196 @@ $("analyzeBtn").addEventListener("click", async () => {
   }
 });
 
-// --- Settings / API key --------------------------------------------------
+// --- Setup / providers ---------------------------------------------------
 const modal = $("settingsModal");
-async function refreshKeyState() {
-  try {
-    const r = await fetch("/key-status");
-    const d = await r.json();
-    $("keyState").textContent = d.has_key
-      ? "✓ A key is configured (keychain or environment)."
-      : "⚠ No key configured yet.";
-  } catch { /* ignore */ }
+let REGISTRY = {};       // provider metadata from /config
+let CONFIG = {};         // current saved settings
+let CONFIGURED = {};     // provider -> bool (has a key)
+let selectedProvider = "anthropic";
+
+function setupMsg(msg, kind = "") {
+  const el = $("setupMsg");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
 }
-$("settingsBtn").addEventListener("click", () => {
+
+// Render the small "Analysing with <provider/model>" chip on the main page.
+function renderActiveProvider() {
+  const meta = REGISTRY[CONFIG.provider];
+  const chip = $("activeProvider");
+  if (!meta) { chip.textContent = "not configured"; return; }
+  const model = CONFIG.model || meta.default_model || "(no model)";
+  const ok = CONFIGURED[CONFIG.provider];
+  chip.textContent = `${meta.label} · ${model}`;
+  chip.className = "provider-chip" + (ok ? " ok" : " warn");
+  chip.title = ok ? "Key configured" : "No API key — open Setup";
+}
+
+async function loadConfig() {
+  const r = await fetch("/config");
+  const d = await r.json();
+  REGISTRY = d.providers;
+  CONFIG = d.config;
+  CONFIGURED = d.configured;
+  selectedProvider = CONFIG.provider;
+  renderActiveProvider();
+}
+
+// Render provider chooser cards inside the modal.
+function renderProviderCards() {
+  const wrap = $("providerCards");
+  wrap.innerHTML = "";
+  for (const [pid, meta] of Object.entries(REGISTRY)) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "provider-card" + (pid === selectedProvider ? " selected" : "");
+    card.dataset.pid = pid;
+    card.innerHTML =
+      `<span class="pc-label">${meta.label}</span>` +
+      `<span class="pc-state ${CONFIGURED[pid] ? "ok" : "warn"}">` +
+      `${CONFIGURED[pid] ? "✓ key saved" : "no key"}</span>`;
+    card.addEventListener("click", () => { selectedProvider = pid; renderModalForProvider(); });
+    wrap.appendChild(card);
+  }
+}
+
+// Render the model dropdown, extra fields, and key label for the selected provider.
+function renderModalForProvider() {
+  const meta = REGISTRY[selectedProvider];
+  renderProviderCards();
+
+  $("providerNote").textContent = meta.note || "";
+  $("providerNote").style.display = meta.note ? "block" : "none";
+
+  // Model dropdown (or free-text fallback when the provider lists none, e.g. Azure).
+  const sel = $("modelSelect");
+  sel.innerHTML = "";
+  if (meta.models.length) {
+    for (const m of meta.models) {
+      const o = document.createElement("option");
+      o.value = m; o.textContent = m;
+      sel.appendChild(o);
+    }
+    sel.disabled = false;
+    sel.value = (selectedProvider === CONFIG.provider && CONFIG.model) || meta.default_model;
+  } else {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "(set via deployment name below)";
+    sel.appendChild(o);
+    sel.disabled = true;
+  }
+
+  // Provider-specific extra fields (Azure endpoint/deployment/version).
+  const ex = $("extraFields");
+  ex.innerHTML = "";
+  for (const f of meta.extra_fields) {
+    const wrap = document.createElement("label");
+    wrap.className = "field";
+    wrap.textContent = f.label + (f.required ? " *" : "");
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.id = "ef_" + f.key;
+    inp.placeholder = f.placeholder || "";
+    inp.value = CONFIG[f.key] || "";
+    wrap.appendChild(inp);
+    ex.appendChild(wrap);
+  }
+
+  $("keyLabel").textContent = meta.key_label;
+  $("apiKey").placeholder = meta.key_url ? "paste key — get one at " + meta.key_url : "…";
+  $("apiKey").value = "";
+  $("keyState").textContent = CONFIGURED[selectedProvider]
+    ? "✓ A key is saved for this provider."
+    : "⚠ No key saved for this provider yet.";
+  setupMsg("");
+}
+
+function collectExtra() {
+  const meta = REGISTRY[selectedProvider];
+  const out = {};
+  for (const f of meta.extra_fields) {
+    out[f.key] = (document.getElementById("ef_" + f.key) || {}).value || "";
+  }
+  return out;
+}
+
+function openSetup() {
   modal.classList.remove("hidden");
-  refreshKeyState();
-});
+  renderModalForProvider();
+}
+$("settingsBtn").addEventListener("click", openSetup);
+$("openSetupInline").addEventListener("click", openSetup);
 $("closeSettings").addEventListener("click", () => modal.classList.add("hidden"));
 modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
-$("saveKeyBtn").addEventListener("click", async () => {
+// Save: persist key (if entered), then config (provider/model/extra fields).
+$("saveSetupBtn").addEventListener("click", async () => {
+  const extra = collectExtra();
   const key = $("apiKey").value.trim();
-  if (!key) return ($("keyState").textContent = "Enter a key first.");
-  const r = await fetch("/save-key", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: key }),
-  });
-  if (r.ok) { $("apiKey").value = ""; $("keyState").textContent = "✓ Saved to keychain."; }
-  else { $("keyState").textContent = "Could not save key."; }
+  try {
+    if (key) {
+      const rk = await fetch("/save-key", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: selectedProvider, api_key: key }),
+      });
+      if (!rk.ok) throw new Error((await rk.json()).detail || "Could not save key");
+    }
+    const rc = await fetch("/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: selectedProvider,
+        model: $("modelSelect").value,
+        ...extra,
+      }),
+    });
+    if (!rc.ok) throw new Error((await rc.json()).detail || "Could not save settings");
+    await loadConfig();
+    selectedProvider = CONFIG.provider;
+    renderModalForProvider();
+    setupMsg("✓ Saved.", "ok");
+  } catch (e) {
+    setupMsg(e.message, "err");
+  }
+});
+
+$("testBtn").addEventListener("click", async () => {
+  const key = $("apiKey").value.trim();
+  setupMsg("Testing connection…");
+  try {
+    // Save a freshly-typed key first so the test can use it.
+    if (key) {
+      await fetch("/save-key", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: selectedProvider, api_key: key }),
+      });
+      CONFIGURED[selectedProvider] = true;
+    }
+    const r = await fetch("/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: selectedProvider,
+        model: $("modelSelect").value,
+        ...collectExtra(),
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Test failed");
+    setupMsg(`✓ Connection OK — model replied: "${d.reply}"`, "ok");
+    renderProviderCards();
+  } catch (e) {
+    setupMsg("✗ " + e.message, "err");
+  }
 });
 
 $("deleteKeyBtn").addEventListener("click", async () => {
-  await fetch("/delete-key", { method: "POST" });
-  refreshKeyState();
+  await fetch("/delete-key", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: selectedProvider }),
+  });
+  CONFIGURED[selectedProvider] = false;
+  renderModalForProvider();
+  renderActiveProvider();
 });
 
-// Warn on load if no key.
-refreshKeyState();
+// Load provider config on startup.
+loadConfig();

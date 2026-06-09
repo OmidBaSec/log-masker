@@ -1,13 +1,34 @@
 # Log Masker — Safe AI Log Analysis
 
-A local web app that lets you send raw logs to Claude for security analysis
+A local web app that lets you send raw logs to a public AI for security analysis
 **without leaking customer data**. Sensitive values (usernames, emails, domains,
 hostnames, IPs, MAC addresses, API keys, tokens, UUIDs, account numbers…) are
-masked **locally** before anything leaves your machine. Claude analyses the
+masked **locally** before anything leaves your machine. The AI analyses the
 masked logs, and the real values are restored **locally** in the response.
 
+## Supported AI providers
+
+Choose one in **⚙ Setup** (provider + model + API key):
+
+| Provider | API | Notes |
+|----------|-----|-------|
+| **Claude (Anthropic)** | api.anthropic.com | Opus 4.8 / Sonnet 4.6 / Haiku 4.5 |
+| **ChatGPT (OpenAI)** | api.openai.com | gpt-4o, gpt-4o-mini, o1, … |
+| **Gemini (Google)** | generativelanguage.googleapis.com | gemini-2.5-pro/flash, 2.0-flash |
+| **Microsoft Copilot (Azure OpenAI)** | your Azure resource | needs endpoint + deployment + api-version |
+
+> Microsoft has no public consumer-Copilot API — the "Copilot" option uses the
+> **Azure OpenAI Service** that backs it. Create a resource and a model
+> deployment in the Azure portal, then enter the endpoint, deployment name, and
+> API version in Setup.
+
+API keys are stored in your **OS keychain** (via `keyring`), never in the
+browser or in any file. Non-secret settings (selected provider, model, Azure
+endpoint) live in a local `app_config.json` (git-ignored). **Test connection**
+in Setup sends a one-word ping to verify the key/model work.
+
 ```
-raw logs ──► [ local mask ] ──► masked logs ──► Claude API
+raw logs ──► [ local mask ] ──► masked logs ──► AI provider
                   │                                   │
             mapping stays local                  AI analysis
                   │                                   │
@@ -42,19 +63,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### API key
+### Provider + API key
 
-Provide your Anthropic API key one of three ways (checked in this order):
+Open **⚙ Setup**, pick a provider, enter its API key, choose a model, and click
+**Save**. The key is checked in this order:
 
-1. Paste it in **⚙ Settings** → stored in the OS keychain via `keyring`.
-2. `export ANTHROPIC_API_KEY=sk-ant-...`
-3. (Settings UI also lets you delete the saved key.)
+1. OS keychain (saved via Setup).
+2. Environment variable: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
+   or `AZURE_OPENAI_API_KEY`.
+
+Use **Test connection** to verify before analysing. Setup also lets you delete a
+saved key per provider.
 
 ## Run
 
 ```bash
-uvicorn app:app --reload --port 8000
-# then open http://127.0.0.1:8000
+cd log_masker_app
+./run.sh start              # background on a random free port; ./run.sh url to get it
+# or, for development:
+uvicorn app:app --reload --port 8000   # then open http://127.0.0.1:8000
 ```
 
 ## Workflow
