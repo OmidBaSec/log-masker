@@ -22,13 +22,14 @@ import json
 import keyring
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import masker
 import providers
+import m365
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -48,6 +49,8 @@ DEFAULT_CONFIG = {
     "azure_endpoint": "",
     "azure_deployment": "",
     "azure_api_version": "2024-08-01-preview",
+    "m365_tenant_id": "",
+    "m365_client_id": "",
 }
 
 # Per-provider environment-variable fallbacks for the API key.
@@ -97,6 +100,8 @@ class ConfigRequest(BaseModel):
     azure_endpoint: str = ""
     azure_deployment: str = ""
     azure_api_version: str = "2024-08-01-preview"
+    m365_tenant_id: str = ""
+    m365_client_id: str = ""
 
 
 class KeyRequest(BaseModel):
@@ -161,7 +166,14 @@ def get_config():
     """Return current settings, the provider registry, and which providers
     have a key configured (booleans only -- never the keys themselves)."""
     cfg = load_config()
-    configured = {pid: bool(get_api_key(pid)) for pid in providers.PROVIDERS}
+    configured = {}
+    for pid in providers.PROVIDERS:
+        if pid == "m365copilot":
+            signed_in, _ = m365.status(cfg.get("m365_tenant_id", ""),
+                                       cfg.get("m365_client_id", ""))
+            configured[pid] = signed_in
+        else:
+            configured[pid] = bool(get_api_key(pid))
     return {
         "config": cfg,
         "providers": providers.public_registry(),
@@ -200,7 +212,17 @@ def delete_key(req: ProviderRequest):
 
 @app.post("/test")
 def test_connection(req: TestRequest):
-    """Send a tiny prompt to verify the provider/key/model actually work."""
+    """Send a tiny prompt to verify the provider actually works."""
+    if req.provider == "m365copilot":
+        cfg = load_config()
+        try:
+            reply = m365.chat(cfg.get("m365_tenant_id", ""),
+                              cfg.get("m365_client_id", ""),
+                              "Connection test.", "Reply with the word OK.")
+        except m365.M365Error as e:
+            raise HTTPException(502, str(e))
+        return {"ok": True, "reply": reply[:200]}
+
     api_key = get_api_key(req.provider)
     if not api_key:
         raise HTTPException(400, "No API key configured for this provider.")
@@ -217,6 +239,64 @@ def test_connection(req: TestRequest):
     return {"ok": True, "reply": reply[:200]}
 
 
+# --- Microsoft 365 Copilot OAuth (delegated) ----------------------------
+def _redirect_uri(request: Request) -> str:
+    # base_url ends with "/"; keep the scheme/host/port the browser actually used.
+    return str(request.base_url) + "oauth/callback"
+
+
+@app.get("/m365/redirect-uri")
+def m365_redirect_uri(request: Request):
+    """The exact redirect URI to register in the Entra app (Web platform)."""
+    return {"redirect_uri": _redirect_uri(request)}
+
+
+@app.get("/m365/login")
+def m365_login(request: Request):
+    cfg = load_config()
+    try:
+        url = m365.build_login_url(cfg.get("m365_tenant_id", ""),
+                                   cfg.get("m365_client_id", ""),
+                                   _redirect_uri(request))
+    except m365.M365Error as e:
+        raise HTTPException(400, str(e))
+    return RedirectResponse(url)
+
+
+@app.get("/oauth/callback", response_class=HTMLResponse)
+def oauth_callback(request: Request):
+    cfg = load_config()
+    try:
+        upn = m365.handle_callback(dict(request.query_params),
+                                   cfg.get("m365_tenant_id", ""),
+                                   cfg.get("m365_client_id", ""))
+        msg = f"Signed in as {upn}. You can close this tab and return to Log Masker."
+        ok = True
+    except m365.M365Error as e:
+        msg = f"Sign-in failed: {e}"
+        ok = False
+    color = "#3fb950" if ok else "#f85149"
+    return (f"<html><body style='font-family:sans-serif;background:#0d1117;"
+            f"color:#e6edf3;padding:40px'><h2 style='color:{color}'>"
+            f"{'✓ Success' if ok else '✗ Error'}</h2><p>{msg}</p>"
+            f"<script>setTimeout(()=>window.close(),2500);</script></body></html>")
+
+
+@app.get("/m365/status")
+def m365_status():
+    cfg = load_config()
+    signed_in, upn = m365.status(cfg.get("m365_tenant_id", ""),
+                                 cfg.get("m365_client_id", ""))
+    return {"signed_in": signed_in, "username": upn}
+
+
+@app.post("/m365/logout")
+def m365_logout():
+    cfg = load_config()
+    m365.logout(cfg.get("m365_tenant_id", ""), cfg.get("m365_client_id", ""))
+    return {"ok": True}
+
+
 @app.post("/preview")
 def preview(req: PreviewRequest):
     """Mask locally and return the masked text + mapping, without any API call.
@@ -229,13 +309,6 @@ def preview(req: PreviewRequest):
 def analyze(req: AnalyzeRequest):
     cfg = load_config()
     provider = cfg["provider"]
-    api_key = get_api_key(provider)
-    if not api_key:
-        label = providers.PROVIDERS.get(provider, {}).get("label", provider)
-        raise HTTPException(
-            400, f"No API key configured for {label}. Open Setup to add one.")
-
-    model = cfg.get("model") or providers.PROVIDERS[provider]["default_model"]
 
     # 1. Mask locally.
     masked, mapping = masker.mask(req.logs, req.categories, req.custom_terms)
@@ -245,10 +318,25 @@ def analyze(req: AnalyzeRequest):
     if req.instructions:
         system += "\n\nAdditional user instructions:\n" + req.instructions.strip()
 
-    try:
-        raw_response = providers.call(provider, api_key, model, system, masked, cfg)
-    except providers.ProviderError as e:
-        raise HTTPException(502, str(e))
+    if provider == "m365copilot":
+        model = "microsoft-365-copilot"
+        try:
+            raw_response = m365.chat(cfg.get("m365_tenant_id", ""),
+                                     cfg.get("m365_client_id", ""),
+                                     system, masked)
+        except m365.M365Error as e:
+            raise HTTPException(502, str(e))
+    else:
+        api_key = get_api_key(provider)
+        if not api_key:
+            label = providers.PROVIDERS.get(provider, {}).get("label", provider)
+            raise HTTPException(
+                400, f"No API key configured for {label}. Open Setup to add one.")
+        model = cfg.get("model") or providers.PROVIDERS[provider]["default_model"]
+        try:
+            raw_response = providers.call(provider, api_key, model, system, masked, cfg)
+        except providers.ProviderError as e:
+            raise HTTPException(502, str(e))
 
     # 3. Restore real values locally.
     restored = masker.unmask(raw_response, mapping)

@@ -47,6 +47,26 @@ PROVIDERS: Dict[str, dict] = {
         "key_url": "https://aistudio.google.com/app/apikey",
         "extra_fields": [],
     },
+    "m365copilot": {
+        "label": "Microsoft 365 Copilot",
+        "models": [],          # no model choice; uses your tenant's Copilot
+        "default_model": "",
+        "auth": "oauth",        # sign-in flow, not an API key
+        "key_label": "",
+        "key_url": "https://entra.microsoft.com/",
+        "extra_fields": [
+            {"key": "m365_tenant_id", "label": "Directory (tenant) ID",
+             "placeholder": "00000000-0000-0000-0000-000000000000",
+             "required": True},
+            {"key": "m365_client_id", "label": "Application (client) ID",
+             "placeholder": "00000000-0000-0000-0000-000000000000",
+             "required": True},
+        ],
+        "note": ("Uses the Microsoft 365 Copilot Chat API (Microsoft Graph, "
+                 "preview /beta). Requires a Copilot add-on license and an Entra "
+                 "ID app registration. You sign in with Microsoft — no API key. "
+                 "Answers are grounded in your tenant data."),
+    },
     "azure": {
         "label": "Microsoft Copilot (Azure OpenAI)",
         "models": [],  # the deployment name acts as the model; user supplies it
@@ -166,6 +186,7 @@ def public_registry() -> dict:
             "label": meta["label"],
             "models": meta["models"],
             "default_model": meta["default_model"],
+            "auth": meta.get("auth", "apikey"),
             "key_label": meta["key_label"],
             "key_url": meta["key_url"],
             "extra_fields": meta["extra_fields"],

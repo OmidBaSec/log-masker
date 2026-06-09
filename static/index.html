@@ -109,16 +109,34 @@
 
       <p id="providerNote" class="provider-note"></p>
 
-      <label class="field">Model
+      <label class="field" id="modelField">Model
         <select id="modelSelect"></select>
       </label>
 
-      <div id="extraFields"><!-- provider-specific fields (e.g. Azure) --></div>
+      <div id="extraFields"><!-- provider-specific fields (e.g. Azure, M365) --></div>
 
-      <label class="field"><span id="keyLabel">API key</span>
-        <input id="apiKey" type="password" autocomplete="off" placeholder="…" />
-      </label>
-      <p id="keyState" class="key-state"></p>
+      <!-- API-key providers -->
+      <div id="keySection">
+        <label class="field"><span id="keyLabel">API key</span>
+          <input id="apiKey" type="password" autocomplete="off" placeholder="…" />
+        </label>
+        <p id="keyState" class="key-state"></p>
+      </div>
+
+      <!-- OAuth providers (Microsoft 365 Copilot) -->
+      <div id="oauthSection" class="hidden">
+        <div class="oauth-redirect">
+          <span class="hint">Register this <strong>Redirect URI</strong> in your Entra app
+            (platform: <em>Web</em>):</span>
+          <code id="redirectUri">…</code>
+        </div>
+        <div class="oauth-actions">
+          <button id="signInBtn" class="primary-btn" type="button">🔐 Sign in with Microsoft</button>
+          <button id="signOutBtn" class="ghost-btn" type="button">Sign out</button>
+        </div>
+        <p id="signInState" class="key-state"></p>
+        <p class="hint">Save your tenant &amp; client IDs first, then sign in.</p>
+      </div>
 
       <p id="setupMsg" class="status"></p>
 

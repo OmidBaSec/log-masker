@@ -206,3 +206,17 @@ code { background: #0b0f16; padding: 1px 5px; border-radius: 5px; font-size: 0.9
   border-left: 2px solid rgba(210,153,34,0.5); padding-left: 10px;
 }
 select#modelSelect { width: 100%; }
+
+/* Generic show/hide (modal keeps its own .modal.hidden rule above) */
+#keySection.hidden, #oauthSection.hidden { display: none; }
+
+/* OAuth (Microsoft 365 Copilot) panel */
+.oauth-redirect {
+  display: flex; flex-direction: column; gap: 6px; margin: 14px 0 10px;
+}
+.oauth-redirect code {
+  display: block; word-break: break-all; padding: 8px 10px;
+  background: #0b0f16; border: 1px solid var(--border); border-radius: 8px;
+}
+.oauth-actions { display: flex; gap: 10px; margin: 6px 0; }
+.key-state.ok { color: var(--green); }

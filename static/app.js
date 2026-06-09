@@ -183,11 +183,16 @@ function renderActiveProvider() {
   const meta = REGISTRY[CONFIG.provider];
   const chip = $("activeProvider");
   if (!meta) { chip.textContent = "not configured"; return; }
-  const model = CONFIG.model || meta.default_model || "(no model)";
   const ok = CONFIGURED[CONFIG.provider];
-  chip.textContent = `${meta.label} · ${model}`;
+  if (meta.auth === "oauth") {
+    chip.textContent = meta.label;
+    chip.title = ok ? "Signed in" : "Not signed in — open Setup";
+  } else {
+    const model = CONFIG.model || meta.default_model || "(no model)";
+    chip.textContent = `${meta.label} · ${model}`;
+    chip.title = ok ? "Key configured" : "No API key — open Setup";
+  }
   chip.className = "provider-chip" + (ok ? " ok" : " warn");
-  chip.title = ok ? "Key configured" : "No API key — open Setup";
 }
 
 async function loadConfig() {
@@ -260,13 +265,39 @@ function renderModalForProvider() {
     ex.appendChild(wrap);
   }
 
-  $("keyLabel").textContent = meta.key_label;
-  $("apiKey").placeholder = meta.key_url ? "paste key — get one at " + meta.key_url : "…";
-  $("apiKey").value = "";
-  $("keyState").textContent = CONFIGURED[selectedProvider]
-    ? "✓ A key is saved for this provider."
-    : "⚠ No key saved for this provider yet.";
+  // Toggle API-key vs OAuth (Microsoft 365 Copilot) panels.
+  const isOauth = meta.auth === "oauth";
+  $("keySection").classList.toggle("hidden", isOauth);
+  $("oauthSection").classList.toggle("hidden", !isOauth);
+  $("deleteKeyBtn").style.display = isOauth ? "none" : "";
+  // M365 Copilot has no model selection; hide the Model field for it.
+  $("modelField").style.display = isOauth ? "none" : "";
+
+  if (isOauth) {
+    refreshM365();
+  } else {
+    $("keyLabel").textContent = meta.key_label;
+    $("apiKey").placeholder = meta.key_url ? "paste key — get one at " + meta.key_url : "…";
+    $("apiKey").value = "";
+    $("keyState").textContent = CONFIGURED[selectedProvider]
+      ? "✓ A key is saved for this provider."
+      : "⚠ No key saved for this provider yet.";
+  }
   setupMsg("");
+}
+
+// Show the exact redirect URI to register and the current sign-in status.
+async function refreshM365() {
+  try {
+    const ru = await (await fetch("/m365/redirect-uri")).json();
+    $("redirectUri").textContent = ru.redirect_uri;
+    const st = await (await fetch("/m365/status")).json();
+    $("signInState").textContent = st.signed_in
+      ? `✓ Signed in as ${st.username}`
+      : "⚠ Not signed in.";
+    $("signInState").className = "key-state" + (st.signed_in ? " ok" : "");
+    $("signOutBtn").style.display = st.signed_in ? "" : "none";
+  } catch (e) { $("signInState").textContent = e.message; }
 }
 
 function collectExtra() {
@@ -353,6 +384,40 @@ $("deleteKeyBtn").addEventListener("click", async () => {
   });
   CONFIGURED[selectedProvider] = false;
   renderModalForProvider();
+  renderActiveProvider();
+});
+
+// --- Microsoft 365 Copilot sign-in ---------------------------------------
+$("signInBtn").addEventListener("click", async () => {
+  const tenant = (document.getElementById("ef_m365_tenant_id") || {}).value || "";
+  const client = (document.getElementById("ef_m365_client_id") || {}).value || "";
+  if (!tenant || !client) return setupMsg("Enter tenant & client IDs, then Save.", "err");
+  // Persist tenant/client so the server-side login can read them.
+  await fetch("/config", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "m365copilot", model: "",
+      m365_tenant_id: tenant, m365_client_id: client }),
+  });
+  setupMsg("Opening Microsoft sign-in… complete it in the popup.");
+  const popup = window.open("/m365/login", "m365login", "width=520,height=680");
+  // Poll for completion, then refresh status.
+  const timer = setInterval(async () => {
+    if (popup && popup.closed) {
+      clearInterval(timer);
+      await loadConfig();
+      await refreshM365();
+      renderProviderCards();
+      renderActiveProvider();
+      setupMsg("");
+    }
+  }, 800);
+});
+
+$("signOutBtn").addEventListener("click", async () => {
+  await fetch("/m365/logout", { method: "POST" });
+  await loadConfig();
+  await refreshM365();
+  renderProviderCards();
   renderActiveProvider();
 });
 

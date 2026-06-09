@@ -12,15 +12,42 @@ Choose one in **⚙ Setup** (provider + model + API key):
 
 | Provider | API | Notes |
 |----------|-----|-------|
-| **Claude (Anthropic)** | api.anthropic.com | Opus 4.8 / Sonnet 4.6 / Haiku 4.5 |
-| **ChatGPT (OpenAI)** | api.openai.com | gpt-4o, gpt-4o-mini, o1, … |
-| **Gemini (Google)** | generativelanguage.googleapis.com | gemini-2.5-pro/flash, 2.0-flash |
-| **Microsoft Copilot (Azure OpenAI)** | your Azure resource | needs endpoint + deployment + api-version |
+| **Claude (Anthropic)** | api.anthropic.com | API key. Opus 4.8 / Sonnet 4.6 / Haiku 4.5 |
+| **ChatGPT (OpenAI)** | api.openai.com | API key. gpt-4o, gpt-4o-mini, o1, … |
+| **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-2.5-pro/flash, 2.0-flash |
+| **Microsoft 365 Copilot** | Microsoft Graph (`/beta/copilot`) | **OAuth sign-in** + Copilot license + Entra app (see below) |
+| **Microsoft Copilot (Azure OpenAI)** | your Azure resource | API key + endpoint + deployment + api-version |
 
-> Microsoft has no public consumer-Copilot API — the "Copilot" option uses the
-> **Azure OpenAI Service** that backs it. Create a resource and a model
-> deployment in the Azure portal, then enter the endpoint, deployment name, and
-> API version in Setup.
+### Microsoft 365 Copilot (OAuth)
+
+This is **not** an API-key provider. It uses the Microsoft 365 Copilot **Chat
+API** (Microsoft Graph, currently preview `/beta`), which requires **delegated
+sign-in** as a licensed user — app-only auth is not supported. Answers are
+grounded in your tenant data and stay inside the Microsoft 365 trust boundary.
+
+**One-time setup (you do this in Entra):**
+
+1. In the [Entra admin center](https://entra.microsoft.com/) → **App registrations**
+   → **New registration**. Give it a name; supported account type "Accounts in
+   this organizational directory only" is fine.
+2. Under **Authentication** → **Add a platform** → **Web**, add the **Redirect
+   URI** shown in the app's Setup panel (e.g. `http://localhost:8000/oauth/callback`).
+   *(If you run on a different port, register that exact URI.)*
+3. Under **API permissions** → **Add a permission** → **Microsoft Graph** →
+   **Delegated permissions**, add **all** of: `Sites.Read.All`, `Mail.Read`,
+   `People.Read.All`, `OnlineMeetingTranscript.Read.All`, `Chat.Read`,
+   `ChannelMessage.Read.All`, `ExternalItem.Read.All`. Grant admin consent if
+   required by your org.
+4. Copy the **Directory (tenant) ID** and **Application (client) ID** from the
+   app's Overview page.
+5. In Log Masker → **⚙ Setup** → **Microsoft 365 Copilot**: paste the tenant and
+   client IDs, click **Save**, then **🔐 Sign in with Microsoft**.
+
+No client secret is needed (public client + PKCE). Tokens are cached locally in
+`m365_token_cache.json` (git-ignored).
+
+> The Azure OpenAI option ("Microsoft Copilot (Azure OpenAI)") is the simpler,
+> key-based path if you don't specifically need M365 Copilot's tenant grounding.
 
 API keys are stored in your **OS keychain** (via `keyring`), never in the
 browser or in any file. Non-secret settings (selected provider, model, Azure
