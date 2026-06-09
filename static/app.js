@@ -178,22 +178,87 @@ function setupMsg(msg, kind = "") {
   el.className = "status" + (kind ? " " + kind : "");
 }
 
-// Render the small "Analysing with <provider/model>" chip on the main page.
-function renderActiveProvider() {
-  const meta = REGISTRY[CONFIG.provider];
-  const chip = $("activeProvider");
-  if (!meta) { chip.textContent = "not configured"; return; }
-  const ok = CONFIGURED[CONFIG.provider];
-  if (meta.auth === "oauth") {
-    chip.textContent = meta.label;
-    chip.title = ok ? "Signed in" : "Not signed in — open Setup";
-  } else {
-    const model = CONFIG.model || meta.default_model || "(no model)";
-    chip.textContent = `${meta.label} · ${model}`;
-    chip.title = ok ? "Key configured" : "No API key — open Setup";
-  }
-  chip.className = "provider-chip" + (ok ? " ok" : " warn");
+// Persist current settings, merging in `extra`, without wiping other fields.
+async function persistConfig(extra) {
+  const payload = {
+    provider: CONFIG.provider,
+    model: CONFIG.model || "",
+    azure_endpoint: CONFIG.azure_endpoint || "",
+    azure_deployment: CONFIG.azure_deployment || "",
+    azure_api_version: CONFIG.azure_api_version || "2024-08-01-preview",
+    m365_tenant_id: CONFIG.m365_tenant_id || "",
+    m365_client_id: CONFIG.m365_client_id || "",
+    ...extra,
+  };
+  const r = await fetch("/config", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json();
+  if (r.ok) CONFIG = d.config;
+  return r.ok;
 }
+
+// Populate the inline provider + model dropdowns (configured providers only).
+function renderActiveProvider() {
+  const pSel = $("activeProviderSelect");
+  const mSel = $("activeModelSelect");
+
+  // Providers you've set up (have a key / are signed in), plus the active one.
+  const available = Object.keys(REGISTRY).filter(
+    (pid) => CONFIGURED[pid] || pid === CONFIG.provider
+  );
+
+  pSel.innerHTML = "";
+  if (!available.length) {
+    const o = document.createElement("option");
+    o.textContent = "No provider set up — open Setup";
+    o.value = "";
+    pSel.appendChild(o);
+    pSel.disabled = true;
+    mSel.style.display = "none";
+    return;
+  }
+  pSel.disabled = false;
+  for (const pid of available) {
+    const o = document.createElement("option");
+    o.value = pid;
+    o.textContent = REGISTRY[pid].label + (CONFIGURED[pid] ? "" : " (no key)");
+    pSel.appendChild(o);
+  }
+  pSel.value = CONFIG.provider;
+
+  // Model dropdown: only for providers that expose a model list.
+  const meta = REGISTRY[CONFIG.provider];
+  if (meta && meta.models.length) {
+    mSel.innerHTML = "";
+    for (const m of meta.models) {
+      const o = document.createElement("option");
+      o.value = m; o.textContent = m;
+      mSel.appendChild(o);
+    }
+    mSel.value = CONFIG.model || meta.default_model;
+    mSel.style.display = "";
+  } else {
+    mSel.style.display = "none";   // Azure (deployment) / M365 (no model)
+  }
+}
+
+// Inline provider change -> switch provider, pick a sensible model, persist.
+$("activeProviderSelect").addEventListener("change", async (e) => {
+  const pid = e.target.value;
+  const meta = REGISTRY[pid];
+  const newModel = meta.models.length ? (meta.default_model || meta.models[0]) : "";
+  await persistConfig({ provider: pid, model: newModel });
+  renderActiveProvider();
+  setStatus(`Now analysing with ${meta.label}.`, "ok");
+});
+
+// Inline model change -> persist.
+$("activeModelSelect").addEventListener("change", async (e) => {
+  await persistConfig({ model: e.target.value });
+  setStatus(`Model set to ${e.target.value}.`, "ok");
+});
 
 async function loadConfig() {
   const r = await fetch("/config");
