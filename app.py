@@ -43,9 +43,17 @@ CONFIG_FILE = os.path.join(APP_DIR, "app_config.json")
 KEYRING_SERVICE = "log_masker"
 
 # Non-secret settings persisted to CONFIG_FILE.
+#   provider         -> the DEFAULT provider used for analysis
+#   provider_models  -> the DEFAULT model chosen for EACH provider
 DEFAULT_CONFIG = {
     "provider": "anthropic",
-    "model": "claude-opus-4-8",
+    "provider_models": {
+        "anthropic": "claude-opus-4-8",
+        "openai": "gpt-5.5",
+        "google": "gemini-3.5-flash",
+        "azure": "",
+        "m365copilot": "",
+    },
     "azure_endpoint": "",
     "azure_deployment": "",
     "azure_api_version": "2024-08-01-preview",
@@ -96,7 +104,8 @@ class PreviewRequest(BaseModel):
 
 class ConfigRequest(BaseModel):
     provider: str
-    model: str = ""
+    make_default: bool = False        # set this provider as the default?
+    provider_models: dict = {}        # per-provider default model overrides
     azure_endpoint: str = ""
     azure_deployment: str = ""
     azure_api_version: str = "2024-08-01-preview"
@@ -126,19 +135,46 @@ class TestRequest(BaseModel):
 # ---------------------------------------------------------------------------
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
+    cfg["provider_models"] = dict(DEFAULT_CONFIG["provider_models"])
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        pass
+        data = {}
+    # Merge the per-provider model map on top of defaults.
+    pm = {**DEFAULT_CONFIG["provider_models"], **(data.get("provider_models") or {})}
+    cfg.update({k: v for k, v in data.items() if k != "provider_models"})
+    cfg["provider_models"] = pm
+    # Migrate a legacy single "model" field into the per-provider map.
+    if data.get("model") and not (data.get("provider_models") or {}).get(cfg["provider"]):
+        cfg["provider_models"][cfg["provider"]] = data["model"]
+    cfg.pop("model", None)
     return cfg
 
 
 def save_config(cfg: dict) -> None:
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg)
+    merged["provider_models"] = {**DEFAULT_CONFIG["provider_models"],
+                                 **(cfg.get("provider_models") or {})}
+    merged.pop("model", None)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2)
+
+
+def resolve_model(cfg: dict, provider: str) -> str:
+    """The default model for `provider`: the saved choice, else the registry
+    default."""
+    m = (cfg.get("provider_models") or {}).get(provider)
+    return m or providers.PROVIDERS.get(provider, {}).get("default_model", "")
+
+
+def public_config(cfg: dict) -> dict:
+    """Config for the frontend, with a convenience `model` = the active
+    (default-provider) model resolved."""
+    out = dict(cfg)
+    out["model"] = resolve_model(cfg, cfg.get("provider", ""))
+    return out
 
 
 def get_api_key(provider: str) -> Optional[str]:
@@ -175,7 +211,7 @@ def get_config():
         else:
             configured[pid] = bool(get_api_key(pid))
     return {
-        "config": cfg,
+        "config": public_config(cfg),
         "providers": providers.public_registry(),
         "configured": configured,
     }
@@ -185,8 +221,22 @@ def get_config():
 def set_config(req: ConfigRequest):
     if req.provider not in providers.PROVIDERS:
         raise HTTPException(400, f"Unknown provider: {req.provider}")
-    save_config(req.dict())
-    return {"ok": True, "config": load_config()}
+    cfg = load_config()
+    # Merge per-provider default-model choices.
+    for pid, model in (req.provider_models or {}).items():
+        if pid in providers.PROVIDERS:
+            cfg["provider_models"][pid] = model
+    # Global provider-specific fields.
+    cfg["azure_endpoint"] = req.azure_endpoint
+    cfg["azure_deployment"] = req.azure_deployment
+    cfg["azure_api_version"] = req.azure_api_version
+    cfg["m365_tenant_id"] = req.m365_tenant_id
+    cfg["m365_client_id"] = req.m365_client_id
+    # Optionally promote this provider to the default.
+    if req.make_default:
+        cfg["provider"] = req.provider
+    save_config(cfg)
+    return {"ok": True, "config": public_config(load_config())}
 
 
 @app.post("/save-key")
@@ -332,7 +382,7 @@ def analyze(req: AnalyzeRequest):
             label = providers.PROVIDERS.get(provider, {}).get("label", provider)
             raise HTTPException(
                 400, f"No API key configured for {label}. Open Setup to add one.")
-        model = cfg.get("model") or providers.PROVIDERS[provider]["default_model"]
+        model = resolve_model(cfg, provider)
         try:
             raw_response = providers.call(provider, api_key, model, system, masked, cfg)
         except providers.ProviderError as e:

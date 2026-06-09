@@ -178,17 +178,20 @@ function setupMsg(msg, kind = "") {
   el.className = "status" + (kind ? " " + kind : "");
 }
 
-// Persist current settings, merging in `extra`, without wiping other fields.
-async function persistConfig(extra) {
+// Persist settings without wiping other fields. `over` may include:
+//   provider, make_default (promote to default provider),
+//   provider_models {pid: model} (per-provider default model overrides),
+//   azure_*/m365_* (global provider fields).
+async function persistConfig(over = {}) {
   const payload = {
-    provider: CONFIG.provider,
-    model: CONFIG.model || "",
-    azure_endpoint: CONFIG.azure_endpoint || "",
-    azure_deployment: CONFIG.azure_deployment || "",
-    azure_api_version: CONFIG.azure_api_version || "2024-08-01-preview",
-    m365_tenant_id: CONFIG.m365_tenant_id || "",
-    m365_client_id: CONFIG.m365_client_id || "",
-    ...extra,
+    provider: over.provider || CONFIG.provider,
+    make_default: !!over.make_default,
+    provider_models: { ...(CONFIG.provider_models || {}), ...(over.provider_models || {}) },
+    azure_endpoint: over.azure_endpoint ?? CONFIG.azure_endpoint ?? "",
+    azure_deployment: over.azure_deployment ?? CONFIG.azure_deployment ?? "",
+    azure_api_version: over.azure_api_version ?? CONFIG.azure_api_version ?? "2024-08-01-preview",
+    m365_tenant_id: over.m365_tenant_id ?? CONFIG.m365_tenant_id ?? "",
+    m365_client_id: over.m365_client_id ?? CONFIG.m365_client_id ?? "",
   };
   const r = await fetch("/config", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -197,6 +200,11 @@ async function persistConfig(extra) {
   const d = await r.json();
   if (r.ok) CONFIG = d.config;
   return r.ok;
+}
+
+// The saved default model for a provider (falls back to registry default).
+function modelFor(pid) {
+  return (CONFIG.provider_models || {})[pid] || (REGISTRY[pid] || {}).default_model || "";
 }
 
 // Populate the inline provider + model dropdowns (configured providers only).
@@ -228,7 +236,8 @@ function renderActiveProvider() {
   }
   pSel.value = CONFIG.provider;
 
-  // Model dropdown: only for providers that expose a model list.
+  // Model dropdown: only for providers that expose a model list. Shows this
+  // provider's saved default model.
   const meta = REGISTRY[CONFIG.provider];
   if (meta && meta.models.length) {
     mSel.innerHTML = "";
@@ -237,27 +246,25 @@ function renderActiveProvider() {
       o.value = m; o.textContent = m;
       mSel.appendChild(o);
     }
-    mSel.value = CONFIG.model || meta.default_model;
+    mSel.value = modelFor(CONFIG.provider);
     mSel.style.display = "";
   } else {
     mSel.style.display = "none";   // Azure (deployment) / M365 (no model)
   }
 }
 
-// Inline provider change -> switch provider, pick a sensible model, persist.
+// Inline provider change -> make it the default provider (its saved model rides along).
 $("activeProviderSelect").addEventListener("change", async (e) => {
   const pid = e.target.value;
-  const meta = REGISTRY[pid];
-  const newModel = meta.models.length ? (meta.default_model || meta.models[0]) : "";
-  await persistConfig({ provider: pid, model: newModel });
+  await persistConfig({ provider: pid, make_default: true });
   renderActiveProvider();
-  setStatus(`Now analysing with ${meta.label}.`, "ok");
+  setStatus(`Default provider is now ${REGISTRY[pid].label}.`, "ok");
 });
 
-// Inline model change -> persist.
+// Inline model change -> update the default model for the current provider.
 $("activeModelSelect").addEventListener("change", async (e) => {
-  await persistConfig({ model: e.target.value });
-  setStatus(`Model set to ${e.target.value}.`, "ok");
+  await persistConfig({ provider_models: { [CONFIG.provider]: e.target.value } });
+  setStatus(`Default model for ${REGISTRY[CONFIG.provider].label} set to ${e.target.value}.`, "ok");
 });
 
 async function loadConfig() {
@@ -279,8 +286,10 @@ function renderProviderCards() {
     card.type = "button";
     card.className = "provider-card" + (pid === selectedProvider ? " selected" : "");
     card.dataset.pid = pid;
+    const isDefault = pid === CONFIG.provider;
     card.innerHTML =
-      `<span class="pc-label">${meta.label}</span>` +
+      `<span class="pc-label">${meta.label}` +
+      (isDefault ? ` <span class="pc-default">★ default</span>` : "") + `</span>` +
       `<span class="pc-state ${CONFIGURED[pid] ? "ok" : "warn"}">` +
       `${CONFIGURED[pid] ? "✓ key saved" : "no key"}</span>`;
     card.addEventListener("click", () => { selectedProvider = pid; renderModalForProvider(); });
@@ -306,13 +315,22 @@ function renderModalForProvider() {
       sel.appendChild(o);
     }
     sel.disabled = false;
-    sel.value = (selectedProvider === CONFIG.provider && CONFIG.model) || meta.default_model;
+    sel.value = modelFor(selectedProvider);
   } else {
     const o = document.createElement("option");
     o.value = ""; o.textContent = "(set via deployment name below)";
     sel.appendChild(o);
     sel.disabled = true;
   }
+
+  // "Use as default" checkbox: checked+locked when already the default.
+  const isDefault = selectedProvider === CONFIG.provider;
+  const chk = $("makeDefaultChk");
+  chk.checked = isDefault;
+  chk.disabled = isDefault;
+  $("defaultToggle").title = isDefault
+    ? "This is already your default provider"
+    : "Tick to make this your default provider when you Save";
 
   // Provider-specific extra fields (Azure endpoint/deployment/version).
   const ex = $("extraFields");
@@ -383,10 +401,13 @@ $("openSetupInline").addEventListener("click", openSetup);
 $("closeSettings").addEventListener("click", () => modal.classList.add("hidden"));
 modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
-// Save: persist key (if entered), then config (provider/model/extra fields).
+// Save: persist key (if entered), this provider's default model, its provider
+// fields, and optionally promote it to the default provider.
 $("saveSetupBtn").addEventListener("click", async () => {
-  const extra = collectExtra();
+  const extra = collectExtra();               // azure_*/m365_* for this provider
   const key = $("apiKey").value.trim();
+  const makeDefault = $("makeDefaultChk").checked;
+  const meta = REGISTRY[selectedProvider];
   try {
     if (key) {
       const rk = await fetch("/save-key", {
@@ -395,19 +416,13 @@ $("saveSetupBtn").addEventListener("click", async () => {
       });
       if (!rk.ok) throw new Error((await rk.json()).detail || "Could not save key");
     }
-    const rc = await fetch("/config", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        provider: selectedProvider,
-        model: $("modelSelect").value,
-        ...extra,
-      }),
-    });
-    if (!rc.ok) throw new Error((await rc.json()).detail || "Could not save settings");
+    const over = { provider: selectedProvider, make_default: makeDefault, ...extra };
+    if (meta.models.length) over.provider_models = { [selectedProvider]: $("modelSelect").value };
+    const ok = await persistConfig(over);
+    if (!ok) throw new Error("Could not save settings");
     await loadConfig();
-    selectedProvider = CONFIG.provider;
     renderModalForProvider();
-    setupMsg("✓ Saved.", "ok");
+    setupMsg("✓ Saved." + (makeDefault ? " Set as default provider." : ""), "ok");
   } catch (e) {
     setupMsg(e.message, "err");
   }
@@ -458,11 +473,8 @@ $("signInBtn").addEventListener("click", async () => {
   const client = (document.getElementById("ef_m365_client_id") || {}).value || "";
   if (!tenant || !client) return setupMsg("Enter tenant & client IDs, then Save.", "err");
   // Persist tenant/client so the server-side login can read them.
-  await fetch("/config", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider: "m365copilot", model: "",
-      m365_tenant_id: tenant, m365_client_id: client }),
-  });
+  await persistConfig({ provider: "m365copilot",
+    m365_tenant_id: tenant, m365_client_id: client });
   setupMsg("Opening Microsoft sign-in… complete it in the popup.");
   const popup = window.open("/m365/login", "m365login", "width=520,height=680");
   // Poll for completion, then refresh status.

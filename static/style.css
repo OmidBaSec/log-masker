@@ -205,6 +205,12 @@ code { background: #0b0f16; padding: 1px 5px; border-radius: 5px; font-size: 0.9
 .provider-card:hover { border-color: var(--accent); }
 .provider-card.selected { border-color: var(--accent); background: rgba(110,168,254,0.10); }
 .pc-label { font-size: 13px; font-weight: 600; }
+.pc-default { font-size: 10px; color: var(--accent); font-weight: 700; }
+.default-toggle {
+  display: flex; align-items: center; gap: 8px; font-size: 13px;
+  margin: 4px 0 6px; cursor: pointer; color: var(--text);
+}
+.default-toggle input { accent-color: var(--accent); }
 .pc-state { font-size: 11px; }
 .pc-state.ok { color: var(--green); }
 .pc-state.warn { color: var(--amber); }
