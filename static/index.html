@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log Masker — Safe AI Log Analysis</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">🛡️</span>
+        <div>
+          <h1>Log Masker</h1>
+          <p class="sub">Scrub sensitive data, analyse with Claude, restore locally.</p>
+        </div>
+      </div>
+      <button id="settingsBtn" class="ghost-btn">⚙ Settings</button>
+    </header>
+
+    <main class="grid">
+      <!-- INPUT -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>1 · Raw logs</h2>
+          <span class="hint">Pasted text stays local until you analyse.</span>
+        </div>
+        <textarea id="logs" class="logs" spellcheck="false"
+          placeholder="Paste raw logs here…&#10;e.g. 2026-06-09 10:31 user=jsmith login from 10.4.2.19 to vpn.acme-corp.com token=sk-abc123..."></textarea>
+
+        <div class="controls">
+          <fieldset class="cats">
+            <legend>Mask</legend>
+            <label><input type="checkbox" value="identities" checked /> Identities <small>(users, emails)</small></label>
+            <label><input type="checkbox" value="network" checked /> Network <small>(domains, IPs, MAC)</small></label>
+            <label><input type="checkbox" value="secrets" checked /> Secrets / IDs <small>(keys, tokens, UUIDs)</small></label>
+          </fieldset>
+
+          <div class="model-row">
+            <label>Model
+              <select id="model">
+                <option value="claude-opus-4-8">Claude Opus 4.8 (deepest)</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (fast)</option>
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (cheap)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <details class="extra" open>
+          <summary>Custom terms to always mask (optional)</summary>
+          <textarea id="customTerms" class="small-ta" spellcheck="false"
+            placeholder="One per line or comma-separated — e.g. server names, codenames:&#10;SRV-DB-02&#10;Acme Corp&#10;project-falcon"></textarea>
+        </details>
+
+        <details class="extra">
+          <summary>Extra analysis instructions (optional)</summary>
+          <textarea id="instructions" class="small-ta" spellcheck="false"
+            placeholder="e.g. Focus on failed SSH logins and lateral movement."></textarea>
+        </details>
+
+        <div class="actions">
+          <button id="previewBtn" class="ghost-btn">👁 Preview masking</button>
+          <button id="analyzeBtn" class="primary-btn">🔍 Mask &amp; Analyse</button>
+        </div>
+        <p id="status" class="status"></p>
+      </section>
+
+      <!-- OUTPUT -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>2 · Result</h2>
+          <div class="tabs" id="tabs">
+            <button class="tab active" data-tab="restored">Final (restored)</button>
+            <button class="tab" data-tab="sent">Sent to AI</button>
+            <button class="tab" data-tab="map">Mapping</button>
+          </div>
+        </div>
+
+        <div class="tabpane active" id="pane-restored">
+          <div class="redaction-badge" id="redBadge">No analysis yet.</div>
+          <div id="restored" class="output markdown"></div>
+        </div>
+
+        <div class="tabpane" id="pane-sent">
+          <p class="hint">This is the exact text that left your machine — sensitive values already replaced by placeholders.</p>
+          <pre id="sent" class="output mono"></pre>
+        </div>
+
+        <div class="tabpane" id="pane-map">
+          <p class="hint">Local only — never sent anywhere. Placeholder → real value.</p>
+          <table class="maptable"><thead><tr><th>Placeholder</th><th>Real value</th></tr></thead>
+            <tbody id="mapBody"></tbody></table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Settings</h3>
+      <p class="hint">Your Anthropic API key is stored in the OS keychain via <code>keyring</code> — never in the browser.</p>
+      <label class="field">Anthropic API key
+        <input id="apiKey" type="password" placeholder="sk-ant-…" />
+      </label>
+      <p id="keyState" class="key-state"></p>
+      <div class="modal-actions">
+        <button id="deleteKeyBtn" class="ghost-btn danger">Delete saved key</button>
+        <div class="spacer"></div>
+        <button id="closeSettings" class="ghost-btn">Close</button>
+        <button id="saveKeyBtn" class="primary-btn">Save key</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
