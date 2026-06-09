@@ -24,8 +24,7 @@ MAX_TOKENS = 4096
 PROVIDERS: Dict[str, dict] = {
     "anthropic": {
         "label": "Claude (Anthropic)",
-        "models": ["claude-opus-4-8", "claude-sonnet-4-6",
-                   "claude-haiku-4-5-20251001"],
+        "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
         "default_model": "claude-opus-4-8",
         "key_label": "Anthropic API key",
         "key_url": "https://console.anthropic.com/settings/keys",
@@ -33,16 +32,18 @@ PROVIDERS: Dict[str, dict] = {
     },
     "openai": {
         "label": "ChatGPT (OpenAI)",
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o1", "o1-mini"],
-        "default_model": "gpt-4o",
+        "models": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4",
+                   "gpt-5.4-mini", "gpt-5.4-nano"],
+        "default_model": "gpt-5.5",
         "key_label": "OpenAI API key",
         "key_url": "https://platform.openai.com/api-keys",
         "extra_fields": [],
     },
     "google": {
         "label": "Gemini (Google)",
-        "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
-        "default_model": "gemini-2.5-flash",
+        "models": ["gemini-3.5-flash", "gemini-3.1-pro-preview",
+                   "gemini-3.1-flash-lite", "gemini-2.5-pro"],
+        "default_model": "gemini-3.5-flash",
         "key_label": "Google AI Studio API key",
         "key_url": "https://aistudio.google.com/app/apikey",
         "extra_fields": [],

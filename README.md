@@ -13,8 +13,8 @@ Choose one in **⚙ Setup** (provider + model + API key):
 | Provider | API | Notes |
 |----------|-----|-------|
 | **Claude (Anthropic)** | api.anthropic.com | API key. Opus 4.8 / Sonnet 4.6 / Haiku 4.5 |
-| **ChatGPT (OpenAI)** | api.openai.com | API key. gpt-4o, gpt-4o-mini, o1, … |
-| **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-2.5-pro/flash, 2.0-flash |
+| **ChatGPT (OpenAI)** | api.openai.com | API key. gpt-5.5, gpt-5.5-pro, gpt-5.4(-mini/-nano) |
+| **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-3.5-flash, 3.1-pro, 3.1-flash-lite, 2.5-pro |
 | **Microsoft 365 Copilot** | Microsoft Graph (`/beta/copilot`) | **OAuth sign-in** + Copilot license + Entra app (see below) |
 | **Microsoft Copilot (Azure OpenAI)** | your Azure resource | API key + endpoint + deployment + api-version |
 
