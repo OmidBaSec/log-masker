@@ -17,9 +17,14 @@ OS keychain (via keyring); non-secret settings live in app_config.json.
 """
 
 import os
+import re
 import sys
 import json
+import time
+import uuid
 import keyring
+from collections import deque
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -30,6 +35,10 @@ from pydantic import BaseModel
 import masker
 import providers
 import m365
+import templates
+import verdict as verdict_mod
+import leakguard
+import store
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -94,6 +103,9 @@ class AnalyzeRequest(BaseModel):
     categories: List[str] = ["identities", "network", "secrets"]
     custom_terms: List[str] = []
     instructions: Optional[str] = None   # extra guidance appended to the prompt
+    structured: bool = True              # ask the model for a verdict schema
+    acknowledge_leaks: bool = False      # analyst confirmed leak-guard findings
+    use_system: bool = True              # send the saved system prompt?
 
 
 class PreviewRequest(BaseModel):
@@ -116,6 +128,74 @@ class ConfigRequest(BaseModel):
 class KeyRequest(BaseModel):
     provider: str
     api_key: str
+
+
+class PatternRequest(BaseModel):
+    label: str
+    regex: str
+
+
+class PatternDeleteRequest(BaseModel):
+    index: int
+
+
+class BuiltinPatternRequest(BaseModel):
+    id: str
+    regex: str
+
+
+class BuiltinPatternResetRequest(BaseModel):
+    id: str
+
+
+class FollowUpRequest(BaseModel):
+    conversation_id: str
+    question: str
+    acknowledge_leaks: bool = False
+
+
+class EndConversationRequest(BaseModel):
+    conversation_id: str
+
+
+class SuggestRequest(BaseModel):
+    logs: str
+    limit: int = 3
+
+
+class CustomTermsRequest(BaseModel):
+    terms: List[str] = []
+
+
+class SystemPromptRequest(BaseModel):
+    prompt: str
+
+
+class TemplateSaveRequest(BaseModel):
+    id: str
+    name: Optional[str] = None
+    category: Optional[str] = None
+    tactic: Optional[str] = None
+    tactic_id: Optional[str] = None
+    technique: Optional[str] = None
+    technique_id: Optional[str] = None
+    prompt: Optional[str] = None
+    keywords: Optional[List[str]] = None
+
+
+class TemplateCreateRequest(BaseModel):
+    name: str
+    prompt: str
+    category: str = "Custom"
+    tactic: str = "Custom"
+    tactic_id: str = ""
+    technique: str = ""
+    technique_id: str = ""
+    keywords: List[str] = []
+
+
+class TemplateIdRequest(BaseModel):
+    id: str
 
 
 class ProviderRequest(BaseModel):
@@ -175,6 +255,13 @@ def public_config(cfg: dict) -> dict:
     out = dict(cfg)
     out["model"] = resolve_model(cfg, cfg.get("provider", ""))
     return out
+
+
+def get_system_prompt(cfg: dict) -> str:
+    """The effective system prompt: the user's saved override if present,
+    otherwise the built-in default."""
+    saved = (cfg.get("system_prompt") or "").strip()
+    return saved or DEFAULT_SYSTEM_PROMPT
 
 
 def get_api_key(provider: str) -> Optional[str]:
@@ -283,30 +370,20 @@ def delete_key(req: ProviderRequest):
 
 @app.post("/test")
 def test_connection(req: TestRequest):
-    """Send a tiny prompt to verify the provider actually works."""
+    """Send a tiny prompt to verify the provider actually works. Goes through
+    the same logged path as real analyses, so it shows up under Requests."""
+    if req.provider not in providers.PROVIDERS:
+        raise HTTPException(400, f"Unknown provider: {req.provider}")
     if req.provider == "m365copilot":
         cfg = load_config()
-        try:
-            reply = m365.chat(cfg.get("m365_tenant_id", ""),
-                              cfg.get("m365_client_id", ""),
-                              "Connection test.", "Reply with the word OK.")
-        except m365.M365Error as e:
-            raise HTTPException(502, str(e))
-        return {"ok": True, "reply": reply[:200]}
-
-    api_key = get_api_key(req.provider)
-    if not api_key:
-        raise HTTPException(400, "No API key configured for this provider.")
-    cfg = req.dict()
-    model = req.model or providers.PROVIDERS[req.provider]["default_model"]
-    try:
-        reply = providers.call(
-            req.provider, api_key, model,
-            "You are a connection test. Reply with the single word: OK.",
-            "ping", cfg,
-        )
-    except providers.ProviderError as e:
-        raise HTTPException(502, str(e))
+        model = "microsoft-365-copilot"
+    else:
+        cfg = req.dict()
+        model = req.model or providers.PROVIDERS[req.provider]["default_model"]
+    reply = _call_provider_chat(
+        cfg, req.provider, model,
+        "You are a connection test. Reply with the single word: OK.",
+        [{"role": "user", "content": "ping"}], kind="test")
     return {"ok": True, "reply": reply[:200]}
 
 
@@ -368,59 +445,453 @@ def m365_logout():
     return {"ok": True}
 
 
+# --- System prompt (editable, persisted in config) ------------------------
+@app.get("/system_prompt")
+def get_system_prompt_route():
+    cfg = load_config()
+    return {
+        "prompt": get_system_prompt(cfg),
+        "default": DEFAULT_SYSTEM_PROMPT,
+        "is_custom": bool((cfg.get("system_prompt") or "").strip()),
+    }
+
+
+@app.post("/system_prompt")
+def save_system_prompt(req: SystemPromptRequest):
+    prompt = req.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "The system prompt must not be empty.")
+    cfg = load_config()
+    cfg["system_prompt"] = prompt
+    save_config(cfg)
+    return {"ok": True, "prompt": prompt, "is_custom": True}
+
+
+@app.post("/system_prompt/reset")
+def reset_system_prompt():
+    cfg = load_config()
+    cfg.pop("system_prompt", None)
+    save_config(cfg)
+    return {"ok": True, "prompt": DEFAULT_SYSTEM_PROMPT, "is_custom": False}
+
+
+# --- Custom always-mask terms (persisted locally) -------------------------
+@app.get("/custom_terms")
+def get_custom_terms():
+    return {"terms": store.get_terms()}
+
+
+@app.post("/custom_terms")
+def save_custom_terms(req: CustomTermsRequest):
+    """Persist the custom always-mask terms."""
+    store.set_terms(req.terms)
+    return {"ok": True, "terms": store.get_terms()}
+
+
+def _merged_terms(request_terms: List[str]) -> List[str]:
+    """Terms from the request plus the saved terms — the saved dictionary
+    always applies, even if the UI is stale."""
+    return list(dict.fromkeys([t.strip() for t in (request_terms or [])
+                               if t.strip()] + store.get_terms()))
+
+
+# --- Saved regex patterns (applied to every mask run) ---------------------
+@app.get("/patterns")
+def list_patterns():
+    return {"patterns": store.get_patterns()}
+
+
+@app.post("/patterns")
+def add_pattern(req: PatternRequest):
+    label = req.label.strip()
+    regex = req.regex.strip()
+    if not label or not regex:
+        raise HTTPException(400, "Both label and regex are required.")
+    try:
+        re.compile(regex)
+    except re.error as e:
+        raise HTTPException(400, f"Invalid regex: {e}")
+    try:
+        store.add_pattern(label, regex)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "patterns": store.get_patterns()}
+
+
+@app.post("/patterns/delete")
+def delete_pattern(req: PatternDeleteRequest):
+    try:
+        store.delete_pattern(req.index)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "patterns": store.get_patterns()}
+
+
+# --- Built-in masking patterns (per log source, editable) ----------------
+@app.get("/builtin_patterns")
+def list_builtin_patterns():
+    """Every built-in pattern with its log source, field label, effective
+    regex, default regex, and whether it has been customised."""
+    return {"patterns": masker.get_builtin_patterns()}
+
+
+@app.post("/builtin_patterns")
+def update_builtin_pattern(req: BuiltinPatternRequest):
+    regex = req.regex.strip()
+    if not regex:
+        raise HTTPException(400, "Regex must not be empty — use Reset to "
+                                 "restore the default.")
+    try:
+        masker.set_builtin_pattern(req.id, regex)
+    except re.error as e:
+        raise HTTPException(400, f"Invalid regex: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/builtin_patterns/reset")
+def reset_builtin_pattern(req: BuiltinPatternResetRequest):
+    masker.reset_builtin_pattern(req.id)
+    return {"ok": True}
+
+
+# --- SOC analyst prompt-template library ---------------------------------
+@app.get("/templates")
+def get_templates():
+    """The full prompt-template library (with MITRE ATT&CK mappings)."""
+    return {"templates": templates.list_templates()}
+
+
+@app.post("/templates/suggest")
+def suggest_templates(req: SuggestRequest):
+    """Suggest the most relevant templates for a raw log. Runs locally on the
+    raw text; only template ids + scores are returned, never log content."""
+    return {"suggestions": templates.suggest(req.logs, limit=req.limit)}
+
+
+@app.post("/templates/save")
+def save_template(req: TemplateSaveRequest):
+    """Edit an existing template (built-in override or custom in place)."""
+    fields = {k: v for k, v in req.dict().items()
+              if k != "id" and v is not None}
+    try:
+        tpl = templates.save_template(req.id, fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "template": tpl}
+
+
+@app.post("/templates/create")
+def create_template(req: TemplateCreateRequest):
+    """Create a new custom template (optionally with suggestion keywords)."""
+    try:
+        tpl = templates.create_template(req.dict())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "template": tpl}
+
+
+@app.post("/templates/delete")
+def delete_template(req: TemplateIdRequest):
+    try:
+        templates.delete_template(req.id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/templates/reset")
+def reset_template(req: TemplateIdRequest):
+    try:
+        tpl = templates.reset_template(req.id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "template": tpl}
+
+
 @app.post("/preview")
 def preview(req: PreviewRequest):
     """Mask locally and return the masked text + mapping, without any API call.
     Lets you see exactly what would be sent before sending it."""
-    masked, mapping = masker.mask(req.logs, req.categories, req.custom_terms)
-    return {"masked": masked, "mapping": mapping, "count": len(mapping)}
+    terms = _merged_terms(req.custom_terms)
+    masked, mapping = masker.mask(req.logs, req.categories, terms,
+                                  store.get_patterns())
+    warnings = leakguard.scan(masked, mapping, terms, req.categories)
+    return {"masked": masked, "mapping": mapping, "count": len(mapping),
+            "warnings": warnings}
 
 
-@app.post("/analyze")
-def analyze(req: AnalyzeRequest):
-    cfg = load_config()
-    provider = cfg["provider"]
+# ---------------------------------------------------------------------------
+# Conversations. Each "Mask & Analyse" starts one; follow-up questions are sent
+# with the full (masked) history so the AI keeps context. State lives only in
+# this process's memory — ending the conversation (or restarting the server)
+# forgets it. The cumulative mapping keeps placeholders consistent across turns.
+# ---------------------------------------------------------------------------
+CONVERSATIONS: dict = {}
 
-    # 1. Mask locally.
-    masked, mapping = masker.mask(req.logs, req.categories, req.custom_terms)
+# Audit log of every outbound AI request (masked content only — that is the
+# whole point). Each entry is appended to AI_REQUESTS_FILE as one JSON line,
+# so there is a permanent on-disk audit trail to verify that no customer data
+# ever left the machine. The in-memory deque feeds the Requests tab.
+AI_REQUESTS_FILE = os.path.join(APP_DIR, "ai_requests.jsonl")
+REQUEST_LOG: deque = deque(maxlen=200)
+_REQUEST_SEQ = {"n": 0}
 
-    # 2. Build the prompt and call the provider with ONLY the masked text.
-    system = DEFAULT_SYSTEM_PROMPT
-    if req.instructions:
-        system += "\n\nAdditional user instructions:\n" + req.instructions.strip()
 
-    if provider == "m365copilot":
-        model = "microsoft-365-copilot"
+def _log_request(kind: str, provider: str, model: str, system: str,
+                 messages: list, response: str, error: str,
+                 duration_ms: int, conversation_id: Optional[str],
+                 leak_info: Optional[dict] = None) -> None:
+    _REQUEST_SEQ["n"] += 1
+    entry = {
+        "seq": _REQUEST_SEQ["n"],
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": kind,                       # analyze | follow-up | test
+        "provider": provider,
+        "model": model,
+        "conversation_id": conversation_id,
+        "system": system,
+        "messages": [dict(m) for m in messages],   # masked, as sent
+        "response": response,                      # masked, as received
+        "error": error,
+        "ok": not error,
+        "duration_ms": duration_ms,
+    }
+    if leak_info:
+        # Leak-guard findings the analyst acknowledged before this was sent —
+        # part of the audit trail by design.
+        entry["leakguard"] = leak_info
+    REQUEST_LOG.append(entry)
+    # Append-only audit file. Never let audit I/O break the request itself.
+    try:
+        with open(AI_REQUESTS_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _load_request_log() -> None:
+    """Reload the most recent audit entries on startup, so the Requests tab
+    (and the seq numbering) survives server restarts."""
+    try:
+        with open(AI_REQUESTS_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    for line in lines[-(REQUEST_LOG.maxlen or 200):]:
         try:
-            raw_response = m365.chat(cfg.get("m365_tenant_id", ""),
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and entry.get("time"):
+            REQUEST_LOG.append(entry)
+            try:
+                _REQUEST_SEQ["n"] = max(_REQUEST_SEQ["n"],
+                                        int(entry.get("seq", 0)))
+            except (TypeError, ValueError):
+                pass
+
+
+_load_request_log()
+
+
+def _call_provider_chat(cfg: dict, provider: str, model: str,
+                        system: str, messages: list,
+                        kind: str = "analyze",
+                        conversation_id: Optional[str] = None,
+                        leak_info: Optional[dict] = None) -> str:
+    """Send a masked conversation to the provider; returns the response text.
+    Every attempt — success or failure — is recorded in REQUEST_LOG."""
+    start = time.time()
+    response, error = "", ""
+    try:
+        if provider == "m365copilot":
+            # The Copilot Chat API takes a single prompt; flatten the history.
+            parts = []
+            for m in messages:
+                who = "ANALYST" if m["role"] == "user" else "YOUR PREVIOUS ANSWER"
+                parts.append(f"{who}:\n{m['content']}")
+            try:
+                response = m365.chat(cfg.get("m365_tenant_id", ""),
                                      cfg.get("m365_client_id", ""),
-                                     system, masked)
-        except m365.M365Error as e:
-            raise HTTPException(502, str(e))
-    else:
+                                     system, "\n\n".join(parts))
+            except m365.M365Error as e:
+                raise HTTPException(502, str(e))
+            return response
         api_key = get_api_key(provider)
         if not api_key:
             label = providers.PROVIDERS.get(provider, {}).get("label", provider)
             raise HTTPException(
                 400, f"No API key configured for {label}. Open Setup to add one.")
-        model = resolve_model(cfg, provider)
         try:
-            raw_response = providers.call(provider, api_key, model, system, masked, cfg)
+            response = providers.call(provider, api_key, model, system,
+                                      messages, cfg)
         except providers.ProviderError as e:
             raise HTTPException(502, str(e))
+        return response
+    except HTTPException as e:
+        error = str(e.detail)
+        raise
+    finally:
+        _log_request(kind, provider, model, system, messages, response, error,
+                     int((time.time() - start) * 1000), conversation_id,
+                     leak_info)
 
-    # 3. Restore real values locally.
-    restored = masker.unmask(raw_response, mapping)
+
+def _shape_response(masked_response: str, mapping: dict, structured: bool) -> dict:
+    """Split a masked AI response into restored prose + a restored verdict
+    object (when structured). The verdict is parsed on the masked text, then
+    its placeholders are restored — never the reverse."""
+    if structured:
+        prose_masked, v = verdict_mod.split_response(masked_response)
+    else:
+        prose_masked, v = masked_response, None
+    return {
+        "ai_response_masked": masked_response,
+        "ai_response_restored": masker.unmask(prose_masked, mapping),
+        "verdict": (verdict_mod.restore(v, masker.unmask, mapping) if v else None),
+    }
+
+
+@app.get("/requests")
+def list_requests():
+    """The outbound AI requests, newest first (masked content only)."""
+    return {"requests": list(REQUEST_LOG)[::-1], "file": AI_REQUESTS_FILE}
+
+
+@app.post("/requests/clear")
+def clear_requests():
+    """Clears the in-memory view only. The on-disk audit file is append-only
+    and is deliberately never deleted by the app."""
+    REQUEST_LOG.clear()
+    return {"ok": True, "file": AI_REQUESTS_FILE}
+
+
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest):
+    """Mask the logs, send them to the AI, and start a conversation that
+    follow-up questions (/chat) can continue."""
+    cfg = load_config()
+    provider = cfg["provider"]
+    model = ("microsoft-365-copilot" if provider == "m365copilot"
+             else resolve_model(cfg, provider))
+
+    # 1. Mask locally with the saved dictionary.
+    terms = _merged_terms(req.custom_terms)
+    masked, mapping = masker.mask(req.logs, req.categories, terms,
+                                  store.get_patterns())
+
+    # 2. Pre-send leak guard: independent second pass over the MASKED text.
+    #    Blocking findings stop everything here — nothing has left the machine
+    #    and no conversation exists — until the analyst acknowledges.
+    warnings = leakguard.scan(masked, mapping, terms, req.categories)
+    if leakguard.has_blocking(warnings) and not req.acknowledge_leaks:
+        return {"blocked": True, "warnings": warnings,
+                "masked_count": len(mapping)}
+    leak_info = ({"warnings": warnings, "acknowledged": req.acknowledge_leaks}
+                 if warnings else None)
+
+    # 3. Build the prompt and call the provider with ONLY the masked text.
+    #    The system prompt is optional — the analyst can turn it off per run.
+    system = get_system_prompt(cfg) if req.use_system else ""
+    if req.instructions:
+        sep = "\n\nAdditional user instructions:\n" if system else ""
+        system += sep + req.instructions.strip()
+    if req.structured:
+        system += verdict_mod.SCHEMA_PROMPT
+
+    conv_id = uuid.uuid4().hex[:12]
+    messages = [{"role": "user", "content": masked}]
+    raw_response = _call_provider_chat(cfg, provider, model, system, messages,
+                                       kind="analyze", conversation_id=conv_id,
+                                       leak_info=leak_info)
+    messages.append({"role": "assistant", "content": raw_response})
+
+    # 4. Remember the conversation so follow-ups keep the AI's context.
+    CONVERSATIONS[conv_id] = {
+        "provider": provider, "model": model, "system": system,
+        "messages": messages, "mapping": mapping,
+        "categories": req.categories, "custom_terms": terms,
+        "structured": req.structured,
+    }
+
+    # 5. Restore real values locally (prose + structured verdict).
+    shaped = _shape_response(raw_response, mapping, req.structured)
 
     return {
         "provider": provider,
         "model": model,
+        "conversation_id": conv_id,
+        "transcript": messages,               # masked history (what left/leaves)
         "masked_sent": masked,                # what actually left the machine
         "mapping": mapping,                   # placeholder -> real (local only)
         "masked_count": len(mapping),
-        "ai_response_masked": raw_response,   # response as returned
-        "ai_response_restored": restored,     # final, un-masked result
+        "warnings": warnings,                 # leak-guard findings (if any)
+        **shaped,                             # restored prose + verdict
     }
+
+
+@app.post("/chat")
+def chat_followup(req: FollowUpRequest):
+    """Ask a follow-up question in an existing conversation. The question is
+    masked with the conversation's cumulative mapping (a value masked earlier
+    is re-masked with the same placeholder even if typed verbatim), and the
+    full masked history is sent so the AI remembers previous turns."""
+    conv = CONVERSATIONS.get(req.conversation_id)
+    if not conv:
+        raise HTTPException(404, "This conversation has ended (or the server "
+                                 "restarted). Analyse a log to start a new one.")
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(400, "The question is empty.")
+
+    masked_q, mapping = masker.mask(question, conv["categories"],
+                                    conv["custom_terms"],
+                                    store.get_patterns(),
+                                    conv["mapping"])
+    # Pre-send leak guard on the masked question (an analyst can paste raw
+    # log content into a follow-up too). Nothing is appended or sent while
+    # blocked.
+    warnings = leakguard.scan(masked_q, mapping, conv["custom_terms"],
+                              conv["categories"])
+    if leakguard.has_blocking(warnings) and not req.acknowledge_leaks:
+        return {"blocked": True, "warnings": warnings,
+                "conversation_id": req.conversation_id}
+    leak_info = ({"warnings": warnings, "acknowledged": req.acknowledge_leaks}
+                 if warnings else None)
+
+    conv["messages"].append({"role": "user", "content": masked_q})
+    try:
+        raw_response = _call_provider_chat(load_config(), conv["provider"],
+                                           conv["model"], conv["system"],
+                                           conv["messages"], kind="follow-up",
+                                           conversation_id=req.conversation_id,
+                                           leak_info=leak_info)
+    except HTTPException:
+        conv["messages"].pop()    # don't poison the history with a failed turn
+        raise
+    conv["messages"].append({"role": "assistant", "content": raw_response})
+    conv["mapping"] = mapping
+
+    shaped = _shape_response(raw_response, mapping, conv.get("structured", False))
+    return {
+        "provider": conv["provider"],
+        "model": conv["model"],
+        "conversation_id": req.conversation_id,
+        "transcript": conv["messages"],
+        "masked_question": masked_q,
+        "mapping": mapping,
+        "masked_count": len(mapping),
+        **shaped,                             # restored prose + (updated) verdict
+    }
+
+
+@app.post("/chat/end")
+def chat_end(req: EndConversationRequest):
+    """Forget a conversation (history + mapping), freeing the UI for a new log."""
+    CONVERSATIONS.pop(req.conversation_id, None)
+    return {"ok": True}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

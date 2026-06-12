@@ -3,14 +3,14 @@
 # Run the Log Masker app in the background so it keeps running after you
 # close the terminal.
 #
-#   ./run.sh start     start in the background on a random free port (default)
+#   ./run.sh start     start in the background on port 8888 (default)
 #   ./run.sh stop      stop the background server
 #   ./run.sh restart   stop then start
 #   ./run.sh status     show whether it's running and on which port
 #   ./run.sh logs      follow the log output (Ctrl-C to stop watching)
 #   ./run.sh url       print the URL it's serving on
 #
-# A random free port is chosen automatically. To force a specific port:
+# Defaults to port 8888. To use a different port:
 #   PORT=9000 ./run.sh start
 
 set -euo pipefail
@@ -44,36 +44,17 @@ port_is_free() {
   ! lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
-# Echo a random free port in the 8000-8999 range, or fail after many tries.
-pick_free_port() {
-  local p
-  for _ in $(seq 1 100); do
-    p=$(( (RANDOM % 1000) + 8000 ))
-    if port_is_free "$p"; then
-      echo "$p"
-      return 0
-    fi
-  done
-  echo "Error: could not find a free port in 8000-8999." >&2
-  return 1
-}
-
 start() {
   if is_running; then
     echo "Already running (PID $(cat "$PID_FILE")) on $(cat "$PORT_FILE" 2>/dev/null | sed 's#^#http://127.0.0.1:#')"
     return 0
   fi
 
-  # Use an explicitly requested port if set, otherwise pick a random free one.
-  local port
-  if [[ -n "${PORT:-}" ]]; then
-    port="$PORT"
-    if ! port_is_free "$port"; then
-      echo "Error: port $port is already in use. Pick another, or unset PORT to auto-select." >&2
-      exit 1
-    fi
-  else
-    port="$(pick_free_port)"
+  local port="${PORT:-8888}"
+  if ! port_is_free "$port"; then
+    echo "Error: port $port is already in use by:" >&2
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2
+    exit 1
   fi
 
   # nohup + & detaches the process so it survives closing the terminal.
@@ -96,7 +77,15 @@ start() {
 
 stop() {
   if is_running; then
-    kill "$(cat "$PID_FILE")"
+    local pid
+    pid="$(cat "$PID_FILE")"
+    kill "$pid"
+    # Wait for the process to actually exit so a follow-up start doesn't
+    # find the port still occupied.
+    for _ in $(seq 1 20); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.25
+    done
     rm -f "$PID_FILE" "$PORT_FILE"
     echo "Stopped."
   else

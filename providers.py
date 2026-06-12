@@ -106,37 +106,41 @@ def _post(url: str, headers: dict, payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Per-provider callers. Each returns the response text.
 # ---------------------------------------------------------------------------
-def _call_anthropic(api_key, model, system, user_text, cfg) -> str:
+# Each caller receives `messages`: a list of {"role": "user"|"assistant",
+# "content": str} covering the whole (masked) conversation so far, so models
+# keep the context of earlier turns.
+def _call_anthropic(api_key, model, system, messages, cfg) -> str:
     data = _post(
         "https://api.anthropic.com/v1/messages",
         {"x-api-key": api_key, "anthropic-version": "2023-06-01",
          "content-type": "application/json"},
         {"model": model, "max_tokens": MAX_TOKENS, "system": system,
-         "messages": [{"role": "user", "content": user_text}]},
+         "messages": messages},
     )
     return "".join(b.get("text", "") for b in data.get("content", [])
                    if b.get("type") == "text").strip()
 
 
-def _call_openai(api_key, model, system, user_text, cfg) -> str:
+def _call_openai(api_key, model, system, messages, cfg) -> str:
     data = _post(
         "https://api.openai.com/v1/chat/completions",
         {"Authorization": f"Bearer {api_key}",
          "content-type": "application/json"},
-        {"model": model, "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_text}]},
+        {"model": model,
+         "messages": [{"role": "system", "content": system}] + messages},
     )
     return data["choices"][0]["message"]["content"].strip()
 
 
-def _call_google(api_key, model, system, user_text, cfg) -> str:
+def _call_google(api_key, model, system, messages, cfg) -> str:
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent?key={api_key}")
+    contents = [{"role": "user" if m["role"] == "user" else "model",
+                 "parts": [{"text": m["content"]}]} for m in messages]
     data = _post(
         url, {"content-type": "application/json"},
         {"system_instruction": {"parts": [{"text": system}]},
-         "contents": [{"role": "user", "parts": [{"text": user_text}]}]},
+         "contents": contents},
     )
     cand = data.get("candidates", [])
     if not cand:
@@ -145,7 +149,7 @@ def _call_google(api_key, model, system, user_text, cfg) -> str:
     return "".join(p.get("text", "") for p in parts).strip()
 
 
-def _call_azure(api_key, model, system, user_text, cfg) -> str:
+def _call_azure(api_key, model, system, messages, cfg) -> str:
     endpoint = (cfg.get("azure_endpoint") or "").rstrip("/")
     deployment = cfg.get("azure_deployment") or model
     api_version = cfg.get("azure_api_version") or "2024-08-01-preview"
@@ -155,9 +159,7 @@ def _call_azure(api_key, model, system, user_text, cfg) -> str:
            f"?api-version={api_version}")
     data = _post(
         url, {"api-key": api_key, "content-type": "application/json"},
-        {"messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_text}]},
+        {"messages": [{"role": "system", "content": system}] + messages},
     )
     return data["choices"][0]["message"]["content"].strip()
 
@@ -171,13 +173,17 @@ _CALLERS = {
 
 
 def call(provider: str, api_key: str, model: str, system: str,
-         user_text: str, cfg: Optional[dict] = None) -> str:
-    """Send a request to `provider` and return the response text."""
+         messages, cfg: Optional[dict] = None) -> str:
+    """Send a conversation to `provider` and return the response text.
+    `messages` is a list of {"role": "user"|"assistant", "content": str};
+    a plain string is accepted as a single-turn convenience."""
+    if isinstance(messages, str):
+        messages = [{"role": "user", "content": messages}]
     if provider not in _CALLERS:
         raise ProviderError(f"Unknown provider: {provider}")
     if not api_key:
         raise ProviderError("No API key configured for this provider.")
-    return _CALLERS[provider](api_key, model, system, user_text, cfg or {})
+    return _CALLERS[provider](api_key, model, system, messages, cfg or {})
 
 
 # ---------------------------------------------------------------------------

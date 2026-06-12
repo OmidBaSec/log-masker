@@ -76,14 +76,103 @@ the masked text is sent to the Claude API.
 
 Toggle these categories in the UI:
 
-- **Identities** — emails, `user=`/`username=`/`login=` values, `DOMAIN\user`.
-- **Network** — FQDNs/hostnames, IPv4, IPv6, MAC addresses.
+- **Identities** — emails, `user=`/`username=`/`login=` values, `DOMAIN\user`,
+  Windows SIDs (`S-1-5-21-…`), Active Directory distinguished names
+  (`CN=…,OU=…,DC=…`), international phone numbers (`+49 …`).
+- **Network** — FQDNs/hostnames, IPv4, IPv6, MAC addresses, syslog header
+  hostnames, `devname=`/`devid=` device names.
 - **Secrets / IDs** — API keys (Anthropic/OpenAI/AWS/GitHub/Slack/Google),
-  `password=`/`token=`/`secret=` values, UUIDs, long hashes, credit-card-like
-  numbers.
+  `password=`/`token=`/`secret=`/`community=` values, UUIDs, long hashes,
+  credit-card-like numbers.
+
+Field-aware extraction understands common raw log formats out of the box —
+just paste and the preview updates automatically:
+
+- **Windows Event Logs** (4624/4625/4720…) — indented `Account Name:`,
+  `Account Domain:`, `Workstation Name:`, `Security ID:`, `Caller Computer
+  Name:` … fields are extracted and their values masked, while the field labels
+  and built-in accounts (`SYSTEM`, `NT AUTHORITY`, `-`) stay readable so the AI
+  still understands the structure.
+- **Network devices** (Cisco ASA/IOS, FortiGate, generic syslog) — the syslog
+  header hostname, `user 'x'`, `user="x"`, `devname="x"`, `srcip=`/`dstip=`,
+  SNMP community strings.
+- **Sysmon** (text and XML) — `User: DOMAIN\user`, `ParentUser:`, usernames in
+  profile paths (`C:\Users\j.doe\…`, `/home/j.doe/…` — only the name is masked,
+  the path stays readable), `<Data Name='TargetUserName'>`, `<Computer>`,
+  hashes. System paths (`C:\Windows\System32\…`) and built-in accounts
+  (`NT AUTHORITY\SYSTEM`) are left intact for the AI.
+- **QRadar** — LEEF events (`usrName=`, `src=`/`dst=`, `identHostName=`),
+  offense API exports (`"offense_source":`, `"assigned_to":`), and event-viewer
+  copies (`Username:`, `Source IP:`, `Log Source:` hostnames). The same value
+  gets the same placeholder across all three formats.
+- **Linux OS** — sshd (`Failed password for invalid user X from`, `Accepted
+  publickey for X`), sudo (`sudo: X :`, working-directory `PWD=/home/X`),
+  su/pam session lines (`for user X by Y(uid=…)`). `root` and numeric uids
+  stay readable.
+- **Cloud / Microsoft JSON** (Azure Platform, Entra ID sign-ins, Microsoft 365
+  Defender, Defender for Cloud, Office 365) — `"userPrincipalName"`,
+  `"userDisplayName"`, `"AccountName"`, `"AccountDomain"`, `"DeviceName"`,
+  `"compromisedEntity"`, `"password"`, `"ipAddress"`; quoted JSON keys are
+  understood everywhere (`"user":"x"` works like `user=x`).
+- **Firewalls & appliances** — Cisco Meraki (epoch-header device names,
+  `identity='x'`), Cisco Firepower/IronPort, Check Point (`user: x;`,
+  `src:`/`dst:`), Palo Alto CSV (`acme\user`), Sophos XG
+  (`user_name=`/`device_name=`), Citrix NetScaler (`User x -`, `Context x@ip`),
+  F5 BIG-IP APM (`Username 'x'`), McAfee Web Gateway (CEF `suser=`),
+  SonicWALL SonicOS (`usr=`, device serials `sn=`), Barracuda WAF/CloudGen,
+  McAfee Network Security Platform, Microsoft Azure Firewall (whole
+  `"resourceId"` masked as one token), HP ProCurve / Aruba / Extreme
+  Networks syslog.
+- **Endpoint security** (Symantec Endpoint Protection, Trend Micro Deep
+  Security / Deep Discovery, McAfee ePO, Cisco AMP, Sophos Central, Keeper) —
+  space-separated keys (`Computer name:`, `User name:`, `Domain name:`), CEF
+  `suser=`/`target=`/`shost=`/`dvchost=`, ePO XML (`<MachineName>`,
+  `<UserName>`), JSON-escaped values (`"ACME\\user"`,
+  `"C:\\Users\\x\\file"`); threat/risk names stay readable.
+- **DNS & DHCP** (ISC BIND, Linux dhcpd) — queried domains, client IPs, and
+  the hostname dhcpd reports in parens (`(WS-FIN-07) via eth0`).
+- **QRadar internals** (SIM Audit, Custom Rule Engine, Anomaly Detection,
+  Asset Profiler, Health Metrics, System Notification) — `user@ip` actor
+  tokens and the generic QRadar/LEEF fields above.
+- **Wazuh** — agent/manager names in alert JSON (`"agent":{"name":…}`),
+  syslog alert headers (`(agent) ip->module`), quoted `Agent: "x"` lines,
+  `srcuser=`/`dstuser=`, and hostnames inside the embedded `full_log` string
+  (same placeholder as the JSON fields). Browser `User-Agent:` headers are
+  deliberately not matched.
+- **Squid Web Proxy** — the username/ident field of the native access log
+  plus client IPs and requested domains; cache verdicts stay readable.
+- **WatchGuard Fireware** — device serials after the syslog hostname,
+  plus the usual syslog/IP fields. Trend Micro Apex Central and Veeam Decoy
+  Server work via the CEF/syslog patterns above.
+- **VMware** (EMC VMware / ESXi / vCenter) — ISO-timestamp syslog header
+  hostnames, `User x@ip logged in`, dotted-domain logins
+  (`ACME.LOCAL\user`), UNC server names (`\\fileserver\share`).
+- **Mail & proxies** (Postfix, reverse proxies) — addresses in `from=<…>` /
+  `to=<…>`, relay hosts, and the authuser field of Apache/nginx combined
+  access logs.
 
 Each unique real value maps to a stable placeholder (`[EMAIL_1]`, `[IP_3]`, …),
 so the same value reads consistently to the AI.
+
+### Saved regex patterns (teach it once, reuse forever)
+
+If a customer-specific value slips through, open **Saved regex patterns** in
+the UI and add a label + regex (e.g. `TICKET` / `INC\d{7}`). Saved patterns are
+stored locally in `custom_store.json` and applied automatically to **every**
+log you paste from then on — no need to add them again. If the regex contains a
+capture group, only the group is masked (`key=(value)` style); otherwise the
+whole match is.
+
+### Editing the built-in regexes (per log source & field)
+
+Open **⚙ Setup → 🧩 Edit masking regexes**. Every built-in pattern is listed,
+grouped by log source type (Windows Event Log, Linux sshd, Cisco Meraki,
+McAfee ePO XML, …) with the field it extracts (`[USER]`, `[HOST]`,
+`[SECRET]`, …). Edit a regex and press **Save** — the change applies to every
+future paste and survives restarts (stored locally in
+`builtin_overrides.json`). Patterns marked **modified** can be restored with
+**↺ default**. A regex that doesn't compile is rejected on save; if an
+override ever becomes invalid on disk, the default is used instead.
 
 > Masking is regex-based and best-effort. Use the **Preview masking** button to
 > review exactly what will be sent before you send it.
@@ -118,13 +207,124 @@ cd log_masker_app
 uvicorn app:app --reload --port 8000   # then open http://127.0.0.1:8000
 ```
 
+## SOC analysis templates (MITRE ATT&CK)
+
+A built-in library of analyst prompt templates covers the common attack
+categories — brute force, suspicious logon, lateral movement, privilege
+escalation, persistence, execution, defense evasion, discovery, C2/beaconing,
+DNS tunneling, exfiltration, ransomware, account manipulation, web-app attack,
+and phishing. Each is mapped to its **MITRE ATT&CK tactic + technique ID**
+(e.g. Brute Force `T1110`, Remote Services `T1021`).
+
+- **Searchable dropdown** — under **SOC analysis template** on the input panel,
+  type to filter by name, category, tactic, technique, or ATT&CK id
+  (`T1110`, `lateral`, `exfil`…). Selecting one fills the analysis
+  instructions with a ready-made, expert prompt for that scenario.
+- **Auto-suggestion** — when you paste a raw log, the app scores it locally
+  against each template's indicators and shows the best matches as ⚡ chips;
+  click one to apply it. Suggestion runs entirely on the local raw text —
+  only template ids + scores are computed, no log content leaves the machine.
+- **Edit & add** — **✏ Edit / add templates** opens an editor: change any
+  template's prompt and MITRE mapping, create your own (with comma-separated
+  *keywords* that drive its auto-suggestion), or delete custom ones. Built-in
+  templates show a **modified** badge and restore with **↺ default**. Edits
+  persist locally in `templates_store.json` and survive restarts.
+
 ## Workflow
 
-1. Paste raw logs, pick which categories to mask, pick a model.
+1. Paste raw logs — or **📎 upload / drag & drop a log file** (text formats,
+   up to 10 MB; it is read locally in the browser and never uploaded
+   anywhere). Pick which categories to mask and a model. Apply a SOC template
+   (suggested ⚡ chip or the searchable dropdown) for a guided prompt.
+   The masked version appears immediately in **Sent to AI**, where
+   **⬇ Download masked** saves it as `<name>.masked.txt` for offline review
+   before you submit anything.
 2. Click **Preview masking** to see the exact masked text + the local mapping.
-3. Click **Mask & Analyse** to send the masked logs to Claude.
-4. Read the **Final (restored)** tab — restored values are highlighted. The
-   **Sent to AI** tab shows precisely what left your machine.
+3. Click **Mask & Analyse** to send the masked logs to the AI. This starts a
+   **conversation**: the result pane becomes a chat where you can ask
+   follow-up questions and the AI keeps the context of all previous turns.
+4. Restored values are highlighted in the chat. The **Sent to AI** tab shows
+   the full masked transcript — precisely what left your machine.
+5. Click **⏹ End conversation** to discard the AI-side history and the local
+   mapping, then analyse the next raw log in a fresh conversation.
+
+### Requests tab (audit log)
+
+The **Requests** tab lists every request sent to an AI provider — analyses,
+follow-ups, and connection tests — newest first. Each entry shows the
+timestamp, provider/model, duration, success or the exact error, the system
+prompt, every (masked) message that was sent, and the raw (masked) response.
+Failed attempts are logged too.
+
+Every entry is also **appended to a local audit file**, `ai_requests.jsonl`
+(one JSON object per line, masked content only), so you can prove later that
+no customer data ever left the machine — e.g.:
+
+```bash
+# anything that left the machine containing "ACME"? (should print nothing)
+grep -i "acme" ai_requests.jsonl
+```
+
+The file is append-only: **Clear view** only empties the on-screen list, and
+the most recent entries are re-loaded from the file on server restart.
+
+### Pre-send leak guard
+
+Before anything is sent, a **second, independent** scanner checks the already-
+masked text — deliberately not reusing the masking engine's patterns, so it
+catches exactly the failures the masker can't see:
+
+- a value that was masked elsewhere but is still visible somewhere (partial
+  masking) — **blocking**
+- a custom always-mask term that slipped through — **blocking**
+- IP addresses / email addresses left unmasked (e.g. after a bad edit to a
+  built-in regex in the pattern editor) — **blocking**
+- secret-shaped high-entropy tokens and hostname-like asset names the
+  patterns didn't know about — **advisory**
+
+Advisory findings appear as a strip in the **Sent to AI** tab (live, during
+preview). Blocking findings stop **Mask & Analyse** and follow-up questions
+cold — nothing leaves the machine — and open a dialog where the analyst can
+**➕ mask** the value (adds it to custom terms and re-masks) or explicitly
+**send anyway**. Acknowledgements are recorded in the request audit log
+(`ai_requests.jsonl`) and badged 🚨 in the Requests tab, so every override is
+attributable and reviewable. Checks for a category the analyst deliberately
+switched off are skipped.
+
+### System prompt (editable + optional per run)
+
+The instructions sent to the AI before your logs (analyst persona +
+placeholder-preservation rules) live in **⚙ Setup → System prompt**, where you
+can **edit and Save** your own version or **↺ Reset to default**. A custom
+prompt persists in `app_config.json` and survives restarts.
+
+Each analysis carries a **Use system prompt** toggle in the Raw logs panel
+(on by default). Untick it to send only your logs plus any *Extra analysis
+instructions* — useful when you want the model's unguided take or are supplying
+your own framing. The toggle is per-run; it never changes the saved prompt.
+
+### Structured verdict
+
+With **Structured verdict** ticked (default), the AI is asked to end its
+analysis with a fixed schema — verdict (`true_positive` / `false_positive` /
+`benign_true_positive` / `inconclusive`), confidence, severity, MITRE ATT&CK
+techniques, IOCs, affected entities, recommended actions, and next steps. The
+app parses that block out of the response, restores the real values into it
+locally, and renders it as a colour-coded **verdict card** above the prose.
+**⧉ Copy JSON** / **⬇ JSON** export the verdict (with real values) for pasting
+into a SOAR incident or case record. Follow-up questions update the card if the
+assessment changes. The parsing is on the *masked* response and tolerant of
+malformed output — a missing or broken block just falls back to plain prose.
+
+### Conversations & masking
+
+Follow-up questions are masked with the **same cumulative mapping** as the
+log: a value masked earlier (say `jsmith` → `[USER_1]`) is re-masked with the
+same placeholder even if you type it verbatim in a question and no generic
+pattern would catch it; brand-new values continue the numbering. Each turn
+sends the full masked history, so the model remembers earlier turns without
+ever seeing a real value. Conversations live only in the local server's
+memory — ending one (or restarting the server) forgets it.
 
 ## Tests
 

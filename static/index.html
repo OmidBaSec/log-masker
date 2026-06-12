@@ -16,7 +16,9 @@
           <p class="sub">Scrub sensitive data, analyse with any AI, restore locally.</p>
         </div>
       </div>
-      <button id="settingsBtn" class="ghost-btn">⚙ Setup</button>
+      <div class="topbar-right">
+        <button id="settingsBtn" class="ghost-btn">⚙ Setup</button>
+      </div>
     </header>
 
     <main class="grid">
@@ -26,8 +28,15 @@
           <h2>1 · Raw logs</h2>
           <span class="hint">Pasted text stays local until you analyse.</span>
         </div>
+        <div class="file-row">
+          <button id="uploadBtn" class="ghost-btn" type="button">📎 Upload log file</button>
+          <span id="fileChip" class="file-chip hidden"></span>
+          <span class="hint">or drag &amp; drop onto the box — read locally, never uploaded anywhere</span>
+          <input type="file" id="logFile"
+            accept=".log,.txt,.csv,.json,.jsonl,.xml,.syslog,.out,text/plain" />
+        </div>
         <textarea id="logs" class="logs" spellcheck="false"
-          placeholder="Paste raw logs here…&#10;e.g. 2026-06-09 10:31 user=jsmith login from 10.4.2.19 to vpn.acme-corp.com token=sk-abc123..."></textarea>
+          placeholder="Paste raw logs here (or upload / drop a file)…&#10;e.g. 2026-06-09 10:31 user=jsmith login from 10.4.2.19 to vpn.acme-corp.com token=sk-abc123..."></textarea>
 
         <div class="controls">
           <fieldset class="cats">
@@ -49,6 +58,47 @@
           <summary>Custom terms to always mask (optional)</summary>
           <textarea id="customTerms" class="small-ta" spellcheck="false"
             placeholder="One per line or comma-separated — e.g. server names, codenames:&#10;SRV-DB-02&#10;Acme Corp&#10;project-falcon"></textarea>
+          <div class="terms-bar">
+            <button id="saveTermsBtn" class="ghost-btn" type="button">💾 Save &amp; apply</button>
+            <button id="viewTermsBtn" class="link-btn" type="button"
+              title="See all saved custom terms in Setup">👁 View saved terms</button>
+            <span id="termsMsg" class="status"></span>
+          </div>
+        </details>
+
+        <details class="extra">
+          <summary>Saved regex patterns (remembered, applied to every paste)</summary>
+          <p class="hint">Add a regex once and it is masked automatically in every
+            future log. If the regex has a capture group, only the group is masked
+            (key=value style). Stored locally in <code>custom_patterns.json</code>.</p>
+          <table class="maptable" id="patternTable">
+            <thead><tr><th>Label</th><th>Regex</th><th></th></tr></thead>
+            <tbody id="patternBody"></tbody>
+          </table>
+          <div class="pattern-add">
+            <input id="patLabel" type="text" autocomplete="off" placeholder="Label, e.g. TICKET" />
+            <input id="patRegex" type="text" autocomplete="off" spellcheck="false"
+              placeholder="Regex, e.g. INC\d{7}" />
+            <button id="patAddBtn" class="ghost-btn" type="button">+ Save</button>
+          </div>
+          <p id="patMsg" class="status"></p>
+        </details>
+
+        <details class="extra" id="templateSection" open>
+          <summary>SOC analysis template <span class="hint">— MITRE ATT&amp;CK</span></summary>
+          <div id="tplSuggest" class="tpl-suggest hidden">
+            <span class="hint">⚡ Suggested for this log:</span>
+            <div id="tplSuggestChips" class="tpl-chips"></div>
+          </div>
+          <div class="tpl-combo">
+            <input id="templateSearch" type="text" autocomplete="off" spellcheck="false"
+              placeholder="Search templates… e.g. brute force, lateral movement, T1110" />
+            <div id="templateDropdown" class="tpl-dropdown hidden"></div>
+          </div>
+          <div class="tpl-toolbar">
+            <button id="editTemplatesBtn" class="link-btn" type="button">✏ Edit / add templates</button>
+          </div>
+          <div id="tplSelected" class="tpl-selected hidden"></div>
         </details>
 
         <details class="extra">
@@ -56,6 +106,16 @@
           <textarea id="instructions" class="small-ta" spellcheck="false"
             placeholder="e.g. Focus on failed SSH logins and lateral movement."></textarea>
         </details>
+
+        <label class="structured-toggle" id="structuredToggle" title="Ask the AI to end its analysis with a standardized SOC verdict (verdict, confidence, severity, MITRE, IOCs, actions) rendered as a card and exportable as JSON">
+          <input type="checkbox" id="structuredChk" checked />
+          <span>Structured verdict <small class="hint">— consistent TP/FP card + JSON for XSOAR</small></span>
+        </label>
+
+        <label class="structured-toggle" id="useSystemToggle" title="Send the system prompt (the senior-analyst instructions) with the request. Turn off to send only your logs and any extra instructions. Edit the prompt in ⚙ Setup.">
+          <input type="checkbox" id="useSystemChk" checked />
+          <span>Use system prompt <small class="hint">— analyst instructions; edit in ⚙ Setup</small></span>
+        </label>
 
         <div class="actions">
           <button id="previewBtn" class="ghost-btn">👁 Preview masking</button>
@@ -71,24 +131,59 @@
           <div class="tabs" id="tabs">
             <button class="tab active" data-tab="restored">Final (restored)</button>
             <button class="tab" data-tab="sent">Sent to AI</button>
-            <button class="tab" data-tab="map">Mapping</button>
+            <button class="tab" data-tab="requests">Requests</button>
           </div>
         </div>
 
         <div class="tabpane active" id="pane-restored">
           <div class="redaction-badge" id="redBadge">No analysis yet.</div>
-          <div id="restored" class="output markdown"></div>
+          <div id="chat" class="output chat"></div>
+          <div id="chatControls" class="chat-controls hidden">
+            <textarea id="followUp" class="chat-input" rows="2" spellcheck="false"
+              placeholder="Ask a follow-up question… (masked with the same placeholders before sending; Enter to send, Shift+Enter for a new line)"></textarea>
+            <div class="chat-buttons">
+              <button id="sendFollowUp" class="primary-btn" type="button">Send ➤</button>
+              <button id="endConvBtn" class="ghost-btn danger" type="button"
+                title="Forget this conversation (history + mapping) so you can analyse a new log">⏹ End conversation</button>
+            </div>
+          </div>
         </div>
 
         <div class="tabpane" id="pane-sent">
-          <p class="hint">This is the exact text that left your machine — sensitive values already replaced by placeholders.</p>
+          <div class="sent-head">
+            <p class="hint">This is the exact text that left your machine — sensitive values already replaced by placeholders.</p>
+            <div class="dl-group">
+              <button id="downloadMaskedBtn" class="ghost-btn hidden" type="button"
+                title="Download the masked log in its original format (e.g. .csv stays .csv)">⬇ Download masked</button>
+              <button id="downloadReviewBtn" class="link-btn hidden" type="button"
+                title="Download a coloured HTML copy with masked fields in red, for visual review">🔴 red review</button>
+            </div>
+          </div>
+          <div id="sentWarnings" class="sent-warnings hidden"></div>
           <pre id="sent" class="output mono"></pre>
+          <div id="sentMapWrap" class="sent-map hidden">
+            <p class="hint">Masked fields in this text — the alias was sent, the real
+              value stayed on this machine:</p>
+            <table class="maptable">
+              <thead><tr><th>Field</th><th>Alias (sent)</th><th>Real value (local)</th></tr></thead>
+              <tbody id="sentMapBody"></tbody>
+            </table>
+          </div>
         </div>
 
-        <div class="tabpane" id="pane-map">
-          <p class="hint">Local only — never sent anywhere. Placeholder → real value.</p>
-          <table class="maptable"><thead><tr><th>Placeholder</th><th>Real value</th></tr></thead>
-            <tbody id="mapBody"></tbody></table>
+        <div class="tabpane" id="pane-requests">
+          <div class="req-toolbar">
+            <p class="hint">Every request sent to an AI provider — masked content
+              only. Each entry is also appended to a local audit file
+              (<code id="reqFile">ai_requests.jsonl</code>) so you can verify at
+              any time that no customer data ever left the machine.</p>
+            <div class="req-actions">
+              <button id="refreshReqBtn" class="ghost-btn" type="button">↻ Refresh</button>
+              <button id="clearReqBtn" class="ghost-btn danger" type="button"
+                title="Hides entries from this view only — the on-disk audit file is append-only and never deleted">Clear view</button>
+            </div>
+          </div>
+          <div id="requestList"><!-- filled by JS --></div>
         </div>
       </section>
     </main>
@@ -150,6 +245,29 @@
         <p class="hint">Save your tenant &amp; client IDs first, then sign in.</p>
       </div>
 
+      <label class="field-label">Masking patterns</label>
+      <button id="openPatternsBtn" class="ghost-btn" type="button">
+        🧩 Edit masking regexes (per log source &amp; field)</button>
+
+      <label class="field-label">Custom terms to always mask</label>
+      <p class="hint">Literal words/phrases masked in every log. Edit them in the
+        <em>Raw logs</em> panel (<strong>Custom terms</strong> → 💾 Save &amp; apply).</p>
+      <div id="setupTermsList" class="terms-list"></div>
+
+      <label class="field-label">System prompt
+        <span class="hint" id="sysPromptState"></span></label>
+      <p class="hint">The instructions sent to the AI before your logs. Edit and
+        <strong>Save</strong>, or restore the built-in default. Toggle it on/off
+        per analysis with <em>Use system prompt</em> in the Raw logs panel.</p>
+      <textarea id="systemPrompt" class="small-ta sys-prompt" spellcheck="false"
+        placeholder="System prompt sent to the AI…"></textarea>
+      <div class="terms-bar">
+        <button id="saveSysPromptBtn" class="ghost-btn" type="button">💾 Save system prompt</button>
+        <button id="resetSysPromptBtn" class="link-btn" type="button"
+          title="Restore the built-in default system prompt">↺ Reset to default</button>
+        <span id="sysPromptMsg" class="status"></span>
+      </div>
+
       <p id="setupMsg" class="status"></p>
 
       <div class="modal-actions">
@@ -158,6 +276,66 @@
         <div class="spacer"></div>
         <button id="saveSetupBtn" class="primary-btn">Save</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Pre-send leak guard modal -->
+  <div id="leakModal" class="modal hidden">
+    <div class="modal-card leak-card">
+      <div class="setup-head">
+        <h3>🚨 Pre-send leak guard</h3>
+        <button id="closeLeak" class="ghost-btn">✕</button>
+      </div>
+      <p class="hint"><strong>Nothing has been sent.</strong> An independent
+        second check found tokens in the <em>masked</em> text that may still
+        identify the customer. Mask them (➕ adds the value to custom terms and
+        re-masks), or acknowledge and send anyway — acknowledgements are
+        recorded in the audit log.</p>
+      <div id="leakFindings"></div>
+      <div class="modal-actions">
+        <button id="leakCancel" class="ghost-btn">Cancel — don't send</button>
+        <div class="spacer"></div>
+        <button id="leakSend" class="ghost-btn danger">Send anyway (acknowledge)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Template editor modal -->
+  <div id="templatesModal" class="modal hidden">
+    <div class="modal-card patterns-card">
+      <div class="setup-head">
+        <h3>✏ Edit / add analysis templates</h3>
+        <button id="closeTemplates" class="ghost-btn">✕</button>
+      </div>
+      <p class="hint">Edit any template's prompt and MITRE mapping, then
+        <strong>Save</strong> — changes apply to every analysis and survive
+        restarts (stored locally in <code>templates_store.json</code>).
+        Built-in templates can be restored with <strong>↺ default</strong>;
+        custom ones can be deleted. For custom templates, the comma-separated
+        <em>keywords</em> drive the auto-suggestion from a pasted log.</p>
+      <div class="tpl-edit-actions">
+        <button id="newTemplateBtn" class="ghost-btn" type="button">＋ New template</button>
+      </div>
+      <p id="tplEditMsg" class="status"></p>
+      <div id="templateEditors"><!-- filled by JS --></div>
+    </div>
+  </div>
+
+  <!-- Built-in masking patterns modal -->
+  <div id="patternsModal" class="modal hidden">
+    <div class="modal-card patterns-card">
+      <div class="setup-head">
+        <h3>🧩 Masking patterns</h3>
+        <button id="closePatterns" class="ghost-btn">✕</button>
+      </div>
+      <p class="hint">All built-in regexes, grouped by log source type. Edit one and
+        press <strong>Save</strong> — it applies to every future paste and survives
+        restarts (stored locally in <code>builtin_overrides.json</code>). If a regex
+        contains a capture group, only the group is masked; otherwise the whole
+        match. Patterns run top to bottom — earlier matches win. <strong>↺ default</strong>
+        restores the original regex.</p>
+      <p id="builtinMsg" class="status"></p>
+      <div id="builtinGroups"><!-- filled by JS --></div>
     </div>
   </div>
 
