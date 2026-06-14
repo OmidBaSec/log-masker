@@ -3,339 +3,415 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Log Masker — Safe AI Log Analysis</title>
+  <title>Log Masker — Secure AI Operations</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <span class="logo">🛡️</span>
-        <div>
-          <h1>Log Masker</h1>
-          <p class="sub">Scrub sensitive data, analyse with any AI, restore locally.</p>
-        </div>
+  <!-- LEFT SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-logo">🛡️</span>
+      <div class="sidebar-brand">
+        <h1>Log Masker</h1>
+        <p>Local Secure AI Pipeline</p>
       </div>
-      <div class="topbar-right">
-        <button id="settingsBtn" class="ghost-btn">⚙ Setup</button>
-      </div>
+    </div>
+    <div class="sidebar-nav">
+      <button class="nav-item active" data-view="workspace">💻 Workspace</button>
+      <button class="nav-item" data-view="rules">🧩 Masking Rules</button>
+      <button class="nav-item" data-view="templates">🎯 Prompt Templates</button>
+      <button class="nav-item" data-view="audit">🛡️ Audit Trail</button>
+    </div>
+    <div class="sidebar-footer">
+      <button id="drawerToggleBtn" class="connection-badge" type="button" title="Open settings">
+        <span class="status-dot" id="activeConnStatus"></span>
+        <span id="activeConnLabel">⚙ Settings</span>
+      </button>
+    </div>
+  </div>
+
+  <main class="main-content">
+    <header class="top-header">
+      <div class="top-title" id="currentViewTitle">Workspace</div>
+      <div class="top-actions"></div>
     </header>
 
-    <main class="grid">
-      <!-- INPUT -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>1 · Raw logs</h2>
-          <span class="hint">Pasted text stays local until you analyse.</span>
-        </div>
-        <div class="file-row">
-          <button id="uploadBtn" class="ghost-btn" type="button">📎 Upload log file</button>
-          <span id="fileChip" class="file-chip hidden"></span>
-          <span class="hint">or drag &amp; drop onto the box — read locally, never uploaded anywhere</span>
-          <input type="file" id="logFile"
-            accept=".log,.txt,.csv,.json,.jsonl,.xml,.syslog,.out,text/plain" />
-        </div>
-        <textarea id="logs" class="logs" spellcheck="false"
-          placeholder="Paste raw logs here (or upload / drop a file)…&#10;e.g. 2026-06-09 10:31 user=jsmith login from 10.4.2.19 to vpn.acme-corp.com token=sk-abc123..."></textarea>
+    <!-- VIEWPORT: WORKSPACE -->
+    <div class="viewport active" id="workspace-viewport">
+      <div class="workspace-grid">
+        <!-- INPUT COLUMN -->
+        <div class="work-panel" id="inputPanel">
+          <div class="panel-header">
+            <h2>1 · Log Source</h2>
+            <span class="hint">Local execution — never uploaded</span>
+          </div>
 
-        <div class="controls">
-          <fieldset class="cats">
-            <legend>Mask</legend>
-            <label><input type="checkbox" value="identities" checked /> Identities <small>(users, emails)</small></label>
-            <label><input type="checkbox" value="network" checked /> Network <small>(domains, IPs, MAC)</small></label>
-            <label><input type="checkbox" value="secrets" checked /> Secrets / IDs <small>(keys, tokens, UUIDs)</small></label>
-          </fieldset>
+          <div class="dropzone" id="dropzoneBox">
+            <button id="uploadBtn" class="btn btn-secondary" type="button">📎 Upload log file</button>
+            <span id="fileChip" class="file-chip hidden"></span>
+            <p class="hint" style="margin-top: 8px;">or drag &amp; drop text logs here</p>
+            <input type="file" id="logFile" style="display: none;"
+              accept=".log,.txt,.csv,.json,.jsonl,.xml,.syslog,.out,text/plain" />
+          </div>
 
-          <div class="provider-row">
-            <span class="hint">Analysing with</span>
-            <select id="activeProviderSelect" class="inline-select" title="Provider"></select>
-            <select id="activeModelSelect" class="inline-select" title="Model"></select>
-            <button id="openSetupInline" class="link-btn" type="button">⚙ setup</button>
+          <div class="editor-wrapper">
+            <textarea id="logs" class="logs-editor" spellcheck="false"
+              placeholder="Paste raw logs here (or upload / drop a file)…&#10;e.g. 2026-06-09 10:31 user=jsmith login from 10.4.2.19 to vpn.acme-corp.com token=sk-abc123…"></textarea>
+          </div>
+
+          <div class="categories-selector cats">
+            <label class="pill-checkbox">
+              <input type="checkbox" value="identities" checked />
+              <span>👤 Identities <small>(users, emails)</small></span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" value="network" checked />
+              <span>🌐 Network <small>(domains, IPs, MAC)</small></span>
+            </label>
+            <label class="pill-checkbox">
+              <input type="checkbox" value="secrets" checked />
+              <span>🔑 Secrets / IDs <small>(keys, tokens, UUIDs)</small></span>
+            </label>
+          </div>
+
+          <div class="config-group">
+            <div class="control-select">
+              <label>AI Provider</label>
+              <select id="activeProviderSelect" class="dropdown"></select>
+            </div>
+            <div class="control-select">
+              <label>Model Engine</label>
+              <select id="activeModelSelect" class="dropdown"></select>
+            </div>
+          </div>
+
+          <div class="settings-section" id="templateSection">
+            <div class="settings-trigger">Prompt templates</div>
+            <div class="settings-body">
+              <div id="tplSuggest" class="tpl-suggest hidden" style="margin-bottom: 12px;">
+                <span class="hint">⚡ Suggested:</span>
+                <div id="tplSuggestChips" class="tpl-chips"></div>
+              </div>
+              <div class="tpl-combo">
+                <input id="templateSearch" class="dropdown" type="text" autocomplete="off"
+                  placeholder="Search templates… e.g. brute force, lateral movement, T1110" />
+                <div id="templateDropdown" class="tpl-dropdown hidden"></div>
+              </div>
+              <div id="tplSelected" class="tpl-selected hidden" style="margin-top: 10px;"></div>
+            </div>
+          </div>
+
+          <details class="settings-section" id="promptSection" open>
+            <summary class="settings-trigger">Prompt — review before sending</summary>
+            <div class="settings-body" style="display: flex; flex-direction: column; gap: 12px;">
+              <div class="prompt-toggles" style="display: flex; flex-direction: column; gap: 8px;">
+                <label class="structured-toggle" style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+                  <input type="checkbox" id="useSystemChk" checked />
+                  <span>System prompt <small class="hint">— SOC analyst context, edit in ⚙ Settings</small></span>
+                </label>
+                <label class="structured-toggle" style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+                  <input type="checkbox" id="useTemplateChk" disabled />
+                  <span>Prompt template <small class="hint" id="tplToggleLabel">— none selected</small></span>
+                </label>
+                <label class="structured-toggle" style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+                  <input type="checkbox" id="structuredChk" checked />
+                  <span>Structured Verdict <small class="hint">— standardized SOC threat card + JSON</small></span>
+                </label>
+              </div>
+              <div class="control-select">
+                <label>Add to prompt</label>
+                <textarea id="instructions" class="logs-editor" style="height: 70px;"
+                  placeholder="Anything extra to tell the AI… e.g. Focus on failed SSH logins and lateral movement."></textarea>
+              </div>
+              <div class="control-select">
+                <label>Full prompt preview <small class="hint">— exactly what will be sent (masked)</small></label>
+                <pre id="promptPreview" class="logs-editor prompt-preview">Paste a log to see the full prompt…</pre>
+              </div>
+            </div>
+          </details>
+
+          <div class="actions" style="display: flex; gap: 12px; margin-top: 16px;">
+            <button id="analyzeBtn" class="btn btn-primary" style="flex: 1;">🔍 Mask &amp; Analyse</button>
+          </div>
+          <div id="analyzeProgress" class="analyze-progress hidden" role="progressbar" aria-label="Waiting for AI response">
+            <div class="analyze-progress-bar"></div>
+          </div>
+          <p id="status" class="status"></p>
+        </div>
+
+        <!-- OUTPUT COLUMN -->
+        <div class="work-panel">
+          <div class="panel-header">
+            <h2>2 · Secure Output</h2>
+            <div class="segmented-control" id="tabs">
+              <button class="segmented-tab active" data-tab="sent">Masked data</button>
+              <button class="segmented-tab" data-tab="restored">Result</button>
+            </div>
+          </div>
+
+          <!-- PANE: RESTORED CHAT -->
+          <div class="tabpane" id="pane-restored">
+            <div class="redaction-badge" id="redBadge" style="margin-bottom: 12px;">No analysis yet.</div>
+            <div id="chat" class="chat-container"></div>
+
+            <div id="chatControls" class="chat-controls hidden"
+              style="margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border-color);">
+              <textarea id="followUp" class="logs-editor" style="height: 56px;" spellcheck="false"
+                placeholder="Ask a follow-up question… (masked with the same placeholders; Enter to send, Shift+Enter for newline)"></textarea>
+              <div class="chat-buttons" style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+                <button id="endConvBtn" class="btn btn-danger-ghost"
+                  title="Forget this conversation (history + mapping) so you can analyse a new log">⏹ End conversation</button>
+                <button id="sendFollowUp" class="btn btn-primary" type="button">Send ➤</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- PANE: SENT TO AI -->
+          <div class="tabpane active" id="pane-sent">
+            <div class="sent-head" style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+              <span class="hint">The exact text that left your machine — sensitive values already replaced.</span>
+              <div class="dl-group" style="display: flex; gap: 8px;">
+                <button id="copyMaskedBtn" class="btn btn-secondary hidden" style="padding: 6px 12px; font-size: 12px;"
+                  title="Copy the masked text to your clipboard">📋 Copy</button>
+                <button id="downloadReviewBtn" class="btn btn-secondary hidden" style="padding: 6px 12px; font-size: 12px;"
+                  title="Download a coloured HTML copy with masked fields in red">🔴 red review</button>
+                <button id="downloadMaskedBtn" class="btn btn-primary hidden" style="padding: 6px 12px; font-size: 12px;"
+                  title="Download the masked log in its original format">⬇ Download masked</button>
+              </div>
+            </div>
+            <div id="sentWarnings" class="sent-warnings hidden"></div>
+            <div class="editor-wrapper">
+              <pre id="sent" class="logs-editor"></pre>
+            </div>
+
+            <div id="sentMapWrap" class="sent-map hidden" style="margin-top: 16px; overflow-y: auto; max-height: 220px;">
+              <p class="hint" style="margin-bottom: 8px;">Masked fields — the alias was sent, the real value stayed local:</p>
+              <table class="maptable">
+                <thead>
+                  <tr><th>Field</th><th>Alias (sent)</th><th>Real value (local)</th></tr>
+                </thead>
+                <tbody id="sentMapBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
+      </div>
+    </div>
 
-        <details class="extra" open>
-          <summary>Custom terms to always mask (optional)</summary>
-          <textarea id="customTerms" class="small-ta" spellcheck="false"
-            placeholder="One per line or comma-separated — e.g. server names, codenames:&#10;SRV-DB-02&#10;Acme Corp&#10;project-falcon"></textarea>
-          <div class="terms-bar">
-            <button id="saveTermsBtn" class="ghost-btn" type="button">💾 Save &amp; apply</button>
-            <button id="viewTermsBtn" class="link-btn" type="button"
-              title="See all saved custom terms in Setup">👁 View saved terms</button>
-            <span id="termsMsg" class="status"></span>
+    <!-- VIEWPORT: MASKING RULES -->
+    <div class="viewport" id="rules-viewport">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; height: 100%; min-height: 0;">
+        <!-- Left: custom terms + custom regex -->
+        <div class="work-panel">
+          <div class="panel-header">
+            <h2>Always-Mask Custom Terms</h2>
           </div>
-        </details>
+          <p class="hint" style="margin-bottom: 12px;">Words and codenames always replaced with placeholders.</p>
 
-        <details class="extra">
-          <summary>Saved regex patterns (remembered, applied to every paste)</summary>
-          <p class="hint">Add a regex once and it is masked automatically in every
-            future log. If the regex has a capture group, only the group is masked
-            (key=value style). Stored locally in <code>custom_patterns.json</code>.</p>
-          <table class="maptable" id="patternTable">
-            <thead><tr><th>Label</th><th>Regex</th><th></th></tr></thead>
-            <tbody id="patternBody"></tbody>
-          </table>
-          <div class="pattern-add">
-            <input id="patLabel" type="text" autocomplete="off" placeholder="Label, e.g. TICKET" />
-            <input id="patRegex" type="text" autocomplete="off" spellcheck="false"
-              placeholder="Regex, e.g. INC\d{7}" />
-            <button id="patAddBtn" class="ghost-btn" type="button">+ Save</button>
+          <div class="chip-container" id="customTermsChipWrapper">
+            <input type="text" id="customTermsInput" class="chip-input" placeholder="Type a term and press Enter…" />
+          </div>
+          <!-- Hidden native textarea preserved for existing backend hooks -->
+          <textarea id="customTerms" style="display: none;"></textarea>
+
+          <div class="terms-bar" style="margin-top: 12px; display: flex; gap: 12px; align-items: center;">
+            <button id="saveTermsBtn" class="btn btn-primary" style="padding: 8px 16px;">💾 Save &amp; apply</button>
+            <span id="termsMsg" class="status" style="margin: 0;"></span>
+          </div>
+
+          <div class="panel-header" style="margin-top: 28px;">
+            <h2>Custom Regex Rules</h2>
+          </div>
+          <p class="hint" style="margin-bottom: 12px;">Added regexes are masked automatically in every log. A capture group masks only the group.</p>
+          <div class="pattern-add" style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <input id="patLabel" class="dropdown" style="flex: 1;" type="text" autocomplete="off" placeholder="Label, e.g. TICKET" />
+            <input id="patRegex" class="dropdown" style="flex: 2;" type="text" autocomplete="off" spellcheck="false" placeholder="Regex, e.g. INC\d{7}" />
+            <button id="patAddBtn" class="btn btn-primary" style="padding: 8px 16px;">+ Save</button>
           </div>
           <p id="patMsg" class="status"></p>
-        </details>
 
-        <details class="extra" id="templateSection" open>
-          <summary>SOC analysis template <span class="hint">— MITRE ATT&amp;CK</span></summary>
-          <div id="tplSuggest" class="tpl-suggest hidden">
-            <span class="hint">⚡ Suggested for this log:</span>
-            <div id="tplSuggestChips" class="tpl-chips"></div>
-          </div>
-          <div class="tpl-combo">
-            <input id="templateSearch" type="text" autocomplete="off" spellcheck="false"
-              placeholder="Search templates… e.g. brute force, lateral movement, T1110" />
-            <div id="templateDropdown" class="tpl-dropdown hidden"></div>
-          </div>
-          <div class="tpl-toolbar">
-            <button id="editTemplatesBtn" class="link-btn" type="button">✏ Edit / add templates</button>
-          </div>
-          <div id="tplSelected" class="tpl-selected hidden"></div>
-        </details>
-
-        <details class="extra">
-          <summary>Extra analysis instructions (optional)</summary>
-          <textarea id="instructions" class="small-ta" spellcheck="false"
-            placeholder="e.g. Focus on failed SSH logins and lateral movement."></textarea>
-        </details>
-
-        <label class="structured-toggle" id="structuredToggle" title="Ask the AI to end its analysis with a standardized SOC verdict (verdict, confidence, severity, MITRE, IOCs, actions) rendered as a card and exportable as JSON">
-          <input type="checkbox" id="structuredChk" checked />
-          <span>Structured verdict <small class="hint">— consistent TP/FP card + JSON for XSOAR</small></span>
-        </label>
-
-        <label class="structured-toggle" id="useSystemToggle" title="Send the system prompt (the senior-analyst instructions) with the request. Turn off to send only your logs and any extra instructions. Edit the prompt in ⚙ Setup.">
-          <input type="checkbox" id="useSystemChk" checked />
-          <span>Use system prompt <small class="hint">— analyst instructions; edit in ⚙ Setup</small></span>
-        </label>
-
-        <div class="actions">
-          <button id="previewBtn" class="ghost-btn">👁 Preview masking</button>
-          <button id="analyzeBtn" class="primary-btn">🔍 Mask &amp; Analyse</button>
-        </div>
-        <p id="status" class="status"></p>
-      </section>
-
-      <!-- OUTPUT -->
-      <section class="panel">
-        <div class="panel-head">
-          <h2>2 · Result</h2>
-          <div class="tabs" id="tabs">
-            <button class="tab active" data-tab="restored">Final (restored)</button>
-            <button class="tab" data-tab="sent">Sent to AI</button>
-            <button class="tab" data-tab="requests">Requests</button>
-          </div>
-        </div>
-
-        <div class="tabpane active" id="pane-restored">
-          <div class="redaction-badge" id="redBadge">No analysis yet.</div>
-          <div id="chat" class="output chat"></div>
-          <div id="chatControls" class="chat-controls hidden">
-            <textarea id="followUp" class="chat-input" rows="2" spellcheck="false"
-              placeholder="Ask a follow-up question… (masked with the same placeholders before sending; Enter to send, Shift+Enter for a new line)"></textarea>
-            <div class="chat-buttons">
-              <button id="sendFollowUp" class="primary-btn" type="button">Send ➤</button>
-              <button id="endConvBtn" class="ghost-btn danger" type="button"
-                title="Forget this conversation (history + mapping) so you can analyse a new log">⏹ End conversation</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="tabpane" id="pane-sent">
-          <div class="sent-head">
-            <p class="hint">This is the exact text that left your machine — sensitive values already replaced by placeholders.</p>
-            <div class="dl-group">
-              <button id="downloadMaskedBtn" class="ghost-btn hidden" type="button"
-                title="Download the masked log in its original format (e.g. .csv stays .csv)">⬇ Download masked</button>
-              <button id="downloadReviewBtn" class="link-btn hidden" type="button"
-                title="Download a coloured HTML copy with masked fields in red, for visual review">🔴 red review</button>
-            </div>
-          </div>
-          <div id="sentWarnings" class="sent-warnings hidden"></div>
-          <pre id="sent" class="output mono"></pre>
-          <div id="sentMapWrap" class="sent-map hidden">
-            <p class="hint">Masked fields in this text — the alias was sent, the real
-              value stayed on this machine:</p>
-            <table class="maptable">
-              <thead><tr><th>Field</th><th>Alias (sent)</th><th>Real value (local)</th></tr></thead>
-              <tbody id="sentMapBody"></tbody>
+          <div style="overflow-y: auto; flex: 1; min-height: 0;">
+            <table class="maptable" id="patternTable">
+              <thead>
+                <tr><th>Label</th><th>Regex</th><th></th></tr>
+              </thead>
+              <tbody id="patternBody"></tbody>
             </table>
           </div>
         </div>
 
-        <div class="tabpane" id="pane-requests">
-          <div class="req-toolbar">
-            <p class="hint">Every request sent to an AI provider — masked content
-              only. Each entry is also appended to a local audit file
-              (<code id="reqFile">ai_requests.jsonl</code>) so you can verify at
-              any time that no customer data ever left the machine.</p>
-            <div class="req-actions">
-              <button id="refreshReqBtn" class="ghost-btn" type="button">↻ Refresh</button>
-              <button id="clearReqBtn" class="ghost-btn danger" type="button"
-                title="Hides entries from this view only — the on-disk audit file is append-only and never deleted">Clear view</button>
-            </div>
+        <!-- Right: built-in patterns -->
+        <div class="work-panel">
+          <div class="panel-header">
+            <h2>Built-in Regex Library</h2>
           </div>
-          <div id="requestList"><!-- filled by JS --></div>
+          <p class="hint" style="margin-bottom: 12px;">Regexes grouped by log source. Override a pattern or reset it to default. Stored locally in <code>builtin_overrides.json</code>.</p>
+          <p id="builtinMsg" class="status"></p>
+          <div id="builtinGroups" style="overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;"></div>
         </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- Setup modal -->
-  <div id="settingsModal" class="modal hidden">
-    <div class="modal-card setup-card">
-      <div class="setup-head">
-        <h3>Setup</h3>
-        <button id="closeSettings" class="ghost-btn">✕</button>
       </div>
-      <p class="hint">Pick an AI provider and add its API key. Keys are stored in your
-        OS keychain via <code>keyring</code> — never in the browser or in any file.
-        Only <strong>masked</strong> logs are ever sent.</p>
+    </div>
 
-      <label class="field-label">Provider</label>
-      <div id="providerCards" class="provider-cards"><!-- filled by JS --></div>
-
-      <p id="providerNote" class="provider-note"></p>
-
-      <label class="field" id="modelField">Default model for this provider
-        <div class="model-pick">
-          <select id="modelSelect"></select>
-          <button id="refreshModelsBtn" class="ghost-btn" type="button"
-            title="Fetch the live model list from your API key">↻</button>
+    <!-- VIEWPORT: SOC TEMPLATES -->
+    <div class="viewport" id="templates-viewport">
+      <div class="work-panel" style="height: 100%;">
+        <div class="panel-header">
+          <h2>Prompt Templates Directory</h2>
+          <button id="newTemplateBtn" class="btn btn-primary" style="padding: 8px 16px;">＋ Create Template</button>
         </div>
-        <input id="modelCustom" class="hidden" type="text" autocomplete="off"
-          placeholder="type a model id, e.g. gemini-3.5-flash" />
-      </label>
+        <p class="hint" style="margin-bottom: 16px;">Prompt templates mapped to MITRE ATT&amp;CK. Edits persist locally in <code>templates_store.json</code>; built-ins can be reset.</p>
+        <p id="tplEditMsg" class="status"></p>
 
-      <label class="default-toggle" id="defaultToggle">
-        <input type="checkbox" id="makeDefaultChk" />
-        <span>Use this provider by default</span>
-      </label>
+        <div id="templateEditors"
+          style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; overflow-y: auto; flex: 1; min-height: 0; align-content: start;"></div>
+      </div>
+    </div>
 
-      <div id="extraFields"><!-- provider-specific fields (e.g. Azure, M365) --></div>
+    <!-- VIEWPORT: AUDIT TRAIL -->
+    <div class="viewport" id="audit-viewport">
+      <div class="work-panel" style="height: 100%;">
+        <div class="panel-header">
+          <h2>Outbound AI Audit Log</h2>
+          <div style="display: flex; gap: 8px;">
+            <button id="clearReqBtn" class="btn btn-danger-ghost" style="padding: 6px 12px; font-size: 12px;"
+              title="Hides entries from this view only — the on-disk audit file is append-only and never deleted">Clear view</button>
+            <button id="refreshReqBtn" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">↻ Refresh</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-bottom: 12px;">Every request sent to an AI provider — masked content only. Each entry is appended to a local audit file (<code id="reqFile">ai_requests.jsonl</code>) so you can verify no customer data ever left the machine.</p>
 
-      <!-- API-key providers -->
-      <div id="keySection">
-        <label class="field"><span id="keyLabel">API key</span>
-          <input id="apiKey" type="password" autocomplete="off" placeholder="…" />
+        <div class="audit-filter">
+          <label class="audit-filter-field">
+            <span>From</span>
+            <input type="datetime-local" id="auditFrom" class="dropdown" />
+          </label>
+          <label class="audit-filter-field">
+            <span>To</span>
+            <input type="datetime-local" id="auditTo" class="dropdown" />
+          </label>
+          <button id="auditFilterClear" class="btn btn-secondary" type="button"
+            style="padding: 8px 14px; font-size: 12px;">Clear</button>
+          <span id="auditCount" class="hint"></span>
+        </div>
+
+        <div id="requestList" style="overflow-y: auto; flex: 1; min-height: 0;"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- DRAWER: GLOBAL SETTINGS -->
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <div class="drawer" id="settingsDrawer">
+    <div class="drawer-header">
+      <h3 style="font-weight: 700;">Global Settings</h3>
+      <button id="closeDrawerBtn" class="btn btn-secondary" style="padding: 6px 10px;">✕</button>
+    </div>
+    <div class="drawer-tabs" id="drawerTabs">
+      <button class="drawer-tab active" type="button" data-stab="connection">🔌 Connection</button>
+      <button class="drawer-tab" type="button" data-stab="prompt">📝 System Prompt</button>
+      <button class="drawer-tab" type="button" data-stab="masking">🧩 Masking</button>
+    </div>
+
+    <div class="drawer-body">
+      <!-- TAB: API / CONNECTION -->
+      <div class="drawer-pane active" id="stab-connection">
+        <p class="hint" style="margin-bottom: 16px;">API keys are stored in your OS keychain via <code>keyring</code> — never in the browser or any file. Only <strong>masked</strong> logs are ever sent.</p>
+
+        <label class="field-label" style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">AI engine configuration</label>
+        <div id="providerCards" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;"></div>
+
+        <p id="providerNote" class="provider-note" style="font-size: 12px; color: var(--color-warning); margin-bottom: 12px;"></p>
+
+        <!-- API-key providers -->
+        <div id="keySection" style="margin-bottom: 16px;">
+          <div class="control-select">
+            <label id="keyLabel">API key</label>
+            <input id="apiKey" type="password" class="dropdown" autocomplete="off" placeholder="…" />
+          </div>
+          <p id="keyState" class="key-state" style="margin-top: 4px;"></p>
+        </div>
+
+        <!-- OAuth providers (Microsoft 365 Copilot) -->
+        <div id="oauthSection" class="hidden" style="margin-bottom: 16px;">
+          <div class="oauth-redirect" style="margin-bottom: 12px;">
+            <span class="hint">Register this Redirect URI in your Entra app (platform: Web):</span>
+            <code id="redirectUri" style="font-family: var(--font-mono); font-size: 11px; background: rgba(0,0,0,0.25); padding: 4px 6px; display: block; word-break: break-all; border-radius: 4px; margin-top: 4px;">…</code>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button id="signInBtn" class="btn btn-primary" style="flex: 1;">🔐 Sign in with Microsoft</button>
+            <button id="signOutBtn" class="btn btn-secondary">Sign out</button>
+          </div>
+          <p id="signInState" class="key-state"></p>
+        </div>
+
+        <!-- Model selection -->
+        <div class="control-select" id="modelField" style="margin-bottom: 16px;">
+          <label>Default model for this provider</label>
+          <div style="display: flex; gap: 8px;">
+            <select id="modelSelect" class="dropdown" style="flex: 1;"></select>
+            <button id="refreshModelsBtn" class="btn btn-secondary" style="padding: 10px 14px;"
+              title="Fetch the live model list from your API key">↻</button>
+          </div>
+          <input id="modelCustom" class="dropdown hidden" type="text" autocomplete="off"
+            placeholder="type a model id, e.g. gemini-3.5-flash" style="margin-top: 8px;" />
+        </div>
+
+        <!-- Provider-specific extra fields (Azure, M365) -->
+        <div id="extraFields" style="margin-bottom: 16px;"></div>
+
+        <label class="default-toggle" id="defaultToggle"
+          style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" id="makeDefaultChk" />
+          <span>Use this provider by default</span>
         </label>
-        <p id="keyState" class="key-state"></p>
-      </div>
 
-      <!-- OAuth providers (Microsoft 365 Copilot) -->
-      <div id="oauthSection" class="hidden">
-        <div class="oauth-redirect">
-          <span class="hint">Register this <strong>Redirect URI</strong> in your Entra app
-            (platform: <em>Web</em>):</span>
-          <code id="redirectUri">…</code>
+        <p id="setupMsg" class="status"></p>
+
+        <div class="drawer-actions" style="margin-top: 20px; display: flex; gap: 8px; border-top: 1px solid var(--border-color); padding-top: 16px; flex-wrap: wrap;">
+          <button id="deleteKeyBtn" class="btn btn-danger-ghost" style="padding: 10px 14px;">🗑 Delete key</button>
+          <button id="testBtn" class="btn btn-secondary" style="flex: 1;">⚡ Test connection</button>
+          <button id="saveSetupBtn" class="btn btn-primary" style="flex: 1;">Save</button>
         </div>
-        <div class="oauth-actions">
-          <button id="signInBtn" class="primary-btn" type="button">🔐 Sign in with Microsoft</button>
-          <button id="signOutBtn" class="ghost-btn" type="button">Sign out</button>
+      </div>
+
+      <!-- TAB: SYSTEM PROMPT -->
+      <div class="drawer-pane" id="stab-prompt">
+        <label class="field-label" style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">
+          Core system prompt <span id="sysPromptState" class="hint"></span></label>
+        <p class="hint" style="margin-bottom: 8px;">Instructions sent before your logs. Toggle on/off per run with the <em>System prompt</em> checkbox.</p>
+        <textarea id="systemPrompt" class="logs-editor" style="height: 320px; font-size: 12px; margin-bottom: 8px;"
+          spellcheck="false" placeholder="System prompt sent to the AI…"></textarea>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <button id="resetSysPromptBtn" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">↺ Reset to default</button>
+          <button id="saveSysPromptBtn" class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;">💾 Save prompt</button>
         </div>
-        <p id="signInState" class="key-state"></p>
-        <p class="hint">Save your tenant &amp; client IDs first, then sign in.</p>
+        <p id="sysPromptMsg" class="status"></p>
       </div>
 
-      <label class="field-label">Masking patterns</label>
-      <button id="openPatternsBtn" class="ghost-btn" type="button">
-        🧩 Edit masking regexes (per log source &amp; field)</button>
-
-      <label class="field-label">Custom terms to always mask</label>
-      <p class="hint">Literal words/phrases masked in every log. Edit them in the
-        <em>Raw logs</em> panel (<strong>Custom terms</strong> → 💾 Save &amp; apply).</p>
-      <div id="setupTermsList" class="terms-list"></div>
-
-      <label class="field-label">System prompt
-        <span class="hint" id="sysPromptState"></span></label>
-      <p class="hint">The instructions sent to the AI before your logs. Edit and
-        <strong>Save</strong>, or restore the built-in default. Toggle it on/off
-        per analysis with <em>Use system prompt</em> in the Raw logs panel.</p>
-      <textarea id="systemPrompt" class="small-ta sys-prompt" spellcheck="false"
-        placeholder="System prompt sent to the AI…"></textarea>
-      <div class="terms-bar">
-        <button id="saveSysPromptBtn" class="ghost-btn" type="button">💾 Save system prompt</button>
-        <button id="resetSysPromptBtn" class="link-btn" type="button"
-          title="Restore the built-in default system prompt">↺ Reset to default</button>
-        <span id="sysPromptMsg" class="status"></span>
-      </div>
-
-      <p id="setupMsg" class="status"></p>
-
-      <div class="modal-actions">
-        <button id="deleteKeyBtn" class="ghost-btn danger">Delete saved key</button>
-        <button id="testBtn" class="ghost-btn">⚡ Test connection</button>
-        <div class="spacer"></div>
-        <button id="saveSetupBtn" class="primary-btn">Save</button>
+      <!-- TAB: MASKING -->
+      <div class="drawer-pane" id="stab-masking">
+        <label class="field-label" style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Masking rules &amp; terms</label>
+        <p class="hint" style="margin-bottom: 12px;">Manage always-mask terms, custom regex patterns, and the built-in detectors that redact sensitive values before anything is sent.</p>
+        <button id="openPatternsBtn" class="btn btn-secondary" type="button" style="width: 100%;">🧩 Edit masking rules &amp; terms</button>
       </div>
     </div>
   </div>
 
-  <!-- Pre-send leak guard modal -->
+  <!-- LEAK GUARD MODAL -->
   <div id="leakModal" class="modal hidden">
-    <div class="modal-card leak-card">
-      <div class="setup-head">
-        <h3>🚨 Pre-send leak guard</h3>
-        <button id="closeLeak" class="ghost-btn">✕</button>
+    <div class="modal-card leak-card" style="width: min(620px, 94vw); max-height: 86vh; display: flex; flex-direction: column;">
+      <div class="setup-head" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="color: var(--color-danger); font-weight: 700;">🚨 Pre-send leak guard</h3>
+        <button id="closeLeak" class="btn btn-secondary" style="padding: 4px 10px;">✕</button>
       </div>
-      <p class="hint"><strong>Nothing has been sent.</strong> An independent
-        second check found tokens in the <em>masked</em> text that may still
-        identify the customer. Mask them (➕ adds the value to custom terms and
-        re-masks), or acknowledge and send anyway — acknowledgements are
-        recorded in the audit log.</p>
-      <div id="leakFindings"></div>
-      <div class="modal-actions">
-        <button id="leakCancel" class="ghost-btn">Cancel — don't send</button>
-        <div class="spacer"></div>
-        <button id="leakSend" class="ghost-btn danger">Send anyway (acknowledge)</button>
+      <p class="hint" style="margin-bottom: 12px;"><strong>Nothing has been sent.</strong> An independent second check found tokens in the
+        <em>masked</em> text that may still identify the customer. Mask them (➕ adds to custom terms and re-masks), or acknowledge and send anyway — acknowledgements are recorded in the audit log.</p>
+      <div id="leakFindings" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;"></div>
+      <div style="display: flex; justify-content: space-between; gap: 10px;">
+        <button id="leakCancel" class="btn btn-secondary">Cancel — don't send</button>
+        <button id="leakSend" class="btn btn-primary"
+          style="background: var(--color-danger); box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25); border-color: var(--color-danger);">Send anyway (acknowledge)</button>
       </div>
-    </div>
-  </div>
-
-  <!-- Template editor modal -->
-  <div id="templatesModal" class="modal hidden">
-    <div class="modal-card patterns-card">
-      <div class="setup-head">
-        <h3>✏ Edit / add analysis templates</h3>
-        <button id="closeTemplates" class="ghost-btn">✕</button>
-      </div>
-      <p class="hint">Edit any template's prompt and MITRE mapping, then
-        <strong>Save</strong> — changes apply to every analysis and survive
-        restarts (stored locally in <code>templates_store.json</code>).
-        Built-in templates can be restored with <strong>↺ default</strong>;
-        custom ones can be deleted. For custom templates, the comma-separated
-        <em>keywords</em> drive the auto-suggestion from a pasted log.</p>
-      <div class="tpl-edit-actions">
-        <button id="newTemplateBtn" class="ghost-btn" type="button">＋ New template</button>
-      </div>
-      <p id="tplEditMsg" class="status"></p>
-      <div id="templateEditors"><!-- filled by JS --></div>
-    </div>
-  </div>
-
-  <!-- Built-in masking patterns modal -->
-  <div id="patternsModal" class="modal hidden">
-    <div class="modal-card patterns-card">
-      <div class="setup-head">
-        <h3>🧩 Masking patterns</h3>
-        <button id="closePatterns" class="ghost-btn">✕</button>
-      </div>
-      <p class="hint">All built-in regexes, grouped by log source type. Edit one and
-        press <strong>Save</strong> — it applies to every future paste and survives
-        restarts (stored locally in <code>builtin_overrides.json</code>). If a regex
-        contains a capture group, only the group is masked; otherwise the whole
-        match. Patterns run top to bottom — earlier matches win. <strong>↺ default</strong>
-        restores the original regex.</p>
-      <p id="builtinMsg" class="status"></p>
-      <div id="builtinGroups"><!-- filled by JS --></div>
     </div>
   </div>
 

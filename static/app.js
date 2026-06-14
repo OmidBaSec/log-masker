@@ -36,24 +36,45 @@ function renderMarkdown(text) {
   return html;
 }
 
-// Render masked text with the placeholders highlighted in red, so the
-// masked fields stand out in the "Sent to AI" view.
-function renderMasked(text) {
-  return escapeHtml(text).replace(
-    /\[([A-Z0-9]+_\d+)\]/g,
-    '<span class="ph">[$1]</span>'
-  );
+// Render masked text with placeholders highlighted in red. Each placeholder is
+// a hover card: when the mapping is known (alias -> real), hovering shows the
+// original local value; otherwise (e.g. the audit view, which only ever holds
+// masked content) it shows a neutral note.
+function renderMasked(text, mapping = {}) {
+  return escapeHtml(text).replace(/\[([A-Z0-9]+_\d+)\]/g, (_m, p1) => {
+    const alias = `[${p1}]`;
+    const real = mapping[alias];
+    const tip = real
+      ? `Original: <code>${escapeHtml(real)}</code>`
+      : `Local masked value`;
+    return `<span class="masked-placeholder" data-alias="${escapeHtml(alias)}">` +
+           `${escapeHtml(alias)}<span class="tooltip-card">${tip}</span></span>`;
+  });
 }
 
-// Wrap restored real values so the user can see what was injected back.
-function highlightRestored(text, mapping) {
+// Wrap restored real values so the user can see what was injected back. Each
+// restored value is a hover card showing the redacted alias it maps to. Uses
+// token substitution so an already-wrapped value can't be re-matched by a
+// shorter value nested inside it.
+function highlightRestored(text, mapping = {}) {
   let html = renderMarkdown(text);
-  const reals = [...new Set(Object.values(mapping))].sort((a, b) => b.length - a.length);
-  for (const real of reals) {
-    if (!real) continue;
-    const esc = escapeHtml(real).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    html = html.replace(new RegExp(esc, "g"), `<mark>${escapeHtml(real)}</mark>`);
+  const aliasFor = {};
+  for (const [alias, real] of Object.entries(mapping)) {
+    if (real && !(real in aliasFor)) aliasFor[real] = alias;
   }
+  const reals = Object.keys(aliasFor).sort((a, b) => b.length - a.length);
+  // Pass 1: replace each real value with a unique, HTML-safe token.
+  reals.forEach((real, i) => {
+    const esc = escapeHtml(real).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp(esc, "g"), `\uE000R${i}\uE000`);
+  });
+  // Pass 2: swap tokens for restored badges (no real text present in pass 1).
+  reals.forEach((real, i) => {
+    const badge = `<span class="restored-badge" data-real="${escapeHtml(real)}">` +
+      `${escapeHtml(real)}<span class="tooltip-card">Redacted alias: ` +
+      `<code>${escapeHtml(aliasFor[real])}</code></span></span>`;
+    html = html.split(`\uE000R${i}\uE000`).join(badge);
+  });
   return html;
 }
 
@@ -169,20 +190,53 @@ function fillSentMapping(mapping) {
   wrap.classList.remove("hidden");
 }
 
-// --- Tabs ---------------------------------------------------------------
+// --- Segmented output tabs (Final restored / Sent to AI) ----------------
 $("tabs").addEventListener("click", (e) => {
-  const btn = e.target.closest(".tab");
+  const btn = e.target.closest(".segmented-tab");
   if (!btn) return;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-  document.querySelectorAll(".tabpane").forEach((p) => p.classList.remove("active"));
+  document.querySelectorAll("#tabs .segmented-tab").forEach((t) => t.classList.remove("active"));
+  document.querySelectorAll("#pane-restored, #pane-sent").forEach((p) => p.classList.remove("active"));
   btn.classList.add("active");
   $("pane-" + btn.dataset.tab).classList.add("active");
-  if (btn.dataset.tab === "requests") loadRequests();
 });
 
 function showTab(name) {
-  document.querySelector(`.tab[data-tab="${name}"]`).click();
+  document.querySelector(`#tabs .segmented-tab[data-tab="${name}"]`).click();
 }
+
+// --- Sidebar viewport navigation -----------------------------------------
+const VIEW_TITLES = {
+  workspace: "Workspace", rules: "Masking Rules",
+  templates: "Prompt Templates", audit: "Audit Trail",
+};
+let loadedViews = {};   // lazy-load each secondary dashboard once
+
+function switchView(viewName) {
+  document.querySelectorAll(".sidebar-nav .nav-item").forEach((i) =>
+    i.classList.toggle("active", i.dataset.view === viewName));
+  document.querySelectorAll(".main-content .viewport").forEach((vp) =>
+    vp.classList.remove("active"));
+  const target = $(`${viewName}-viewport`);
+  if (target) target.classList.add("active");
+  $("currentViewTitle").textContent = VIEW_TITLES[viewName] || viewName;
+
+  // Lazy-load / refresh secondary dashboards on first open.
+  if (viewName === "rules" && !loadedViews.rules) {
+    loadedViews.rules = true;
+    loadBuiltinPatterns();
+    renderCustomTermsChips();
+  }
+  if (viewName === "templates" && !loadedViews.templates) {
+    loadedViews.templates = true;
+    tplEditMsg("");
+    loadTemplateEditors();
+  }
+  if (viewName === "audit") loadRequests();
+}
+
+document.querySelectorAll(".sidebar-nav .nav-item").forEach((btn) => {
+  btn.addEventListener("click", () => switchView(btn.dataset.view));
+});
 
 // --- Preview (mask only, no API call) -----------------------------------
 // Runs locally on the server; updates the "Sent to AI" tab + its field table.
@@ -223,7 +277,7 @@ async function runPreview() {
       $("redBadge").textContent =
         `${d.count} value(s) masked in ${uploadedFileName}. Download the masked file (⬇) to review — masked fields are shown in red.`;
     } else {
-      $("sent").innerHTML = renderMasked(d.masked);
+      $("sent").innerHTML = renderMasked(d.masked, d.mapping);
       $("redBadge").textContent = `${d.count} value(s) masked. Nothing sent yet — review the "Sent to AI" tab (⬇ to download the masked file).`;
     }
     $("redBadge").className = "redaction-badge active";
@@ -234,9 +288,6 @@ async function runPreview() {
   }
 }
 
-// Manual button still works as an explicit refresh.
-$("previewBtn").addEventListener("click", runPreview);
-
 // Auto-preview: re-mask shortly after the user stops typing/pasting, or when
 // the masking options change — no need to click "Preview masking".
 let previewTimer = null;
@@ -245,6 +296,7 @@ function scheduleAutoPreview() {
   previewTimer = setTimeout(() => {
     runPreview();
     suggestTemplates();
+    refreshPromptPreview();
   }, 350);
 }
 $("logs").addEventListener("input", scheduleAutoPreview);
@@ -252,6 +304,66 @@ $("customTerms").addEventListener("input", scheduleAutoPreview);
 document.querySelectorAll(".cats input").forEach((c) =>
   c.addEventListener("change", scheduleAutoPreview)
 );
+
+// --- Full prompt preview --------------------------------------------------
+// The instructions actually sent = the selected template's prompt (if its
+// toggle is on) followed by anything typed into "Add to prompt".
+function effectiveInstructions() {
+  const parts = [];
+  if ($("useTemplateChk").checked && selectedTemplateId) {
+    const t = TEMPLATES.find((x) => x.id === selectedTemplateId);
+    if (t) parts.push(t.prompt);
+  }
+  const extra = $("instructions").value.trim();
+  if (extra) parts.push(extra);
+  return parts.join("\n\n");
+}
+
+let promptPreviewTimer = null;
+function schedulePromptPreview() {
+  clearTimeout(promptPreviewTimer);
+  promptPreviewTimer = setTimeout(refreshPromptPreview, 350);
+}
+
+// Ask the server to assemble the EXACT prompt (system + masked user message)
+// so the analyst sees what will be sent before clicking analyse.
+async function refreshPromptPreview() {
+  const pre = $("promptPreview");
+  if (!pre) return;
+  const logs = $("logs").value.trim();
+  if (!logs) { pre.textContent = "Paste a log to see the full prompt…"; return; }
+  if (CONV.id) {
+    pre.textContent = "Conversation active — end it to compose a new prompt.";
+    return;
+  }
+  try {
+    const r = await fetch("/preview_prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        logs,
+        categories: selectedCategories(),
+        custom_terms: customTerms(),
+        instructions: effectiveInstructions() || null,
+        structured: $("structuredChk").checked,
+        use_system: $("useSystemChk").checked,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Preview failed");
+    const sys = d.system && d.system.trim() ? d.system : "(no system prompt)";
+    pre.textContent =
+      "════════ SYSTEM ════════\n" + sys +
+      "\n\n════════ USER · masked log sent to AI ════════\n" + d.user;
+  } catch (e) {
+    pre.textContent = "Could not build prompt preview: " + e.message;
+  }
+}
+
+// Toggling any prompt component re-renders the preview.
+["useSystemChk", "useTemplateChk", "structuredChk"].forEach((id) =>
+  $(id).addEventListener("change", schedulePromptPreview));
+$("instructions").addEventListener("input", schedulePromptPreview);
 
 // --- File upload (read locally in the browser; same masking pipeline) ----
 // The file content goes into the raw-logs box and is auto-masked like a
@@ -318,6 +430,25 @@ logsBox.addEventListener("drop", (e) => {
   }
 });
 
+// Drag & drop onto the styled dropzone (around the upload button) too.
+const dropzone = $("dropzoneBox");
+if (dropzone) {
+  ["dragenter", "dragover"].forEach((ev) =>
+    dropzone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    }));
+  ["dragleave", "drop"].forEach((ev) =>
+    dropzone.addEventListener(ev, () => dropzone.classList.remove("dragover")));
+  dropzone.addEventListener("drop", (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) {
+      e.preventDefault();
+      loadLogFile(f);
+    }
+  });
+}
+
 // Hide the file chip when the box is emptied by hand.
 logsBox.addEventListener("input", () => {
   if (!logsBox.value.trim() && uploadedFileName) {
@@ -348,6 +479,7 @@ let lastMaskedText = "";
 function setMaskedArtifact(text) {
   lastMaskedText = text || "";
   const has = !!lastMaskedText;
+  $("copyMaskedBtn").classList.toggle("hidden", !has);
   $("downloadMaskedBtn").classList.toggle("hidden", !has);
   // Red HTML review is only offered for uploaded files.
   $("downloadReviewBtn").classList.toggle("hidden", !(has && uploadedFileName));
@@ -409,6 +541,33 @@ $("downloadMaskedBtn").addEventListener("click", () => {
     mime = "text/plain";
   }
   triggerDownload(new Blob([lastMaskedText], { type: `${mime};charset=utf-8` }), name);
+});
+
+// Copy the masked text straight to the clipboard.
+$("copyMaskedBtn").addEventListener("click", async () => {
+  if (!lastMaskedText) return;
+  const btn = $("copyMaskedBtn");
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(lastMaskedText);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = lastMaskedText;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    const original = btn.textContent;
+    btn.textContent = "✅ Copied";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (e) {
+    const original = btn.textContent;
+    btn.textContent = "⚠ Copy failed";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  }
 });
 
 // Secondary download: coloured HTML copy for visual review (uploads only).
@@ -518,10 +677,11 @@ async function loadCustomTerms() {
     savedTerms = d.terms || [];
     $("customTerms").value = savedTerms.join("\n");
     renderSetupTerms();
+    renderCustomTermsChips();
   } catch { /* box stays as-is */ }
 }
 
-// Read-only list of saved custom terms, shown in Setup.
+// Read-only list of saved custom terms, shown in Setup (no-op if not present).
 function renderSetupTerms() {
   const box = $("setupTermsList");
   if (!box) return;
@@ -533,6 +693,67 @@ function renderSetupTerms() {
     .map((t) => `<span class="term-chip">${escapeHtml(t)}</span>`)
     .join("");
 }
+
+// --- Custom terms chip editor (mirrors the hidden #customTerms textarea) ---
+// The chip wrapper is the visible editor; the hidden textarea remains the
+// single source of truth used by customTerms()/saveTerms() and the backend.
+function currentTermValues() {
+  return $("customTerms").value.split("\n").map((v) => v.trim()).filter(Boolean);
+}
+
+function renderCustomTermsChips() {
+  const wrapper = $("customTermsChipWrapper");
+  const input = $("customTermsInput");
+  if (!wrapper || !input) return;
+  wrapper.querySelectorAll(".term-chip").forEach((c) => c.remove());
+  for (const val of currentTermValues()) {
+    const chip = document.createElement("div");
+    chip.className = "term-chip";
+    chip.innerHTML = `<span>${escapeHtml(val)}</span>`;
+    const del = document.createElement("button");
+    del.className = "term-chip-delete";
+    del.type = "button";
+    del.textContent = "✕";
+    del.addEventListener("click", () => removeCustomTerm(val));
+    chip.appendChild(del);
+    wrapper.insertBefore(chip, input);
+  }
+}
+
+function removeCustomTerm(term) {
+  $("customTerms").value = currentTermValues().filter((v) => v !== term).join("\n");
+  renderCustomTermsChips();
+  termsMsg("Unsaved changes — click 💾 Save & apply.");
+}
+
+function addCustomTerm(raw) {
+  const term = (raw || "").trim();
+  if (!term) return;
+  const values = currentTermValues();
+  if (!values.includes(term)) {
+    values.push(term);
+    $("customTerms").value = values.join("\n");
+    renderCustomTermsChips();
+    termsMsg("Unsaved changes — click 💾 Save & apply.");
+  }
+  const input = $("customTermsInput");
+  if (input) input.value = "";
+}
+
+(() => {
+  const input = $("customTermsInput");
+  if (!input) return;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addCustomTerm(input.value);
+    } else if (e.key === "Backspace" && !input.value) {
+      const vals = currentTermValues();
+      if (vals.length) removeCustomTerm(vals[vals.length - 1]);
+    }
+  });
+  input.addEventListener("blur", () => addCustomTerm(input.value));
+})();
 
 function termsMsg(msg, kind = "") {
   const el = $("termsMsg");
@@ -696,10 +917,9 @@ loadPatterns();
 
 // --- SOC analysis template library ---------------------------------------
 // Searchable dropdown of MITRE-mapped prompt templates, plus auto-suggestions
-// from the pasted log. Selecting one fills the analysis instructions.
+// from the pasted log. Selecting one toggles it into the full prompt.
 let TEMPLATES = [];
 let selectedTemplateId = null;
-let appliedTemplatePrompt = "";   // so "clear" only wipes an unedited prompt
 
 async function loadTemplates() {
   try {
@@ -752,11 +972,12 @@ function selectTemplate(id) {
   selectedTemplateId = id;
   $("templateSearch").value = t.name;
   $("templateDropdown").classList.add("hidden");
-  // Fill instructions, preserving anything the analyst already typed.
-  const cur = $("instructions").value.trim();
-  $("instructions").value =
-    cur && cur !== appliedTemplatePrompt.trim() ? cur + "\n\n" + t.prompt : t.prompt;
-  appliedTemplatePrompt = $("instructions").value;
+  // Enable + turn on the prompt-section template toggle (don't touch the
+  // analyst's "Add to prompt" text — the template is a separate component).
+  const chk = $("useTemplateChk");
+  chk.disabled = false;
+  chk.checked = true;
+  $("tplToggleLabel").textContent = `— ${t.name}`;
   const sel = $("tplSelected");
   sel.innerHTML =
     `<div class="tpl-sel-head"><strong>${escapeHtml(t.name)}</strong>` +
@@ -765,18 +986,19 @@ function selectTemplate(id) {
     `<div class="tpl-sel-prompt hint">${escapeHtml(t.prompt)}</div>`;
   sel.classList.remove("hidden");
   $("tplClear").addEventListener("click", clearTemplate);
+  refreshPromptPreview();
 }
 
 function clearTemplate() {
   selectedTemplateId = null;
   $("templateSearch").value = "";
   $("tplSelected").classList.add("hidden");
-  // Only wipe instructions if they still hold the unedited template prompt.
-  if ($("instructions").value.trim() === appliedTemplatePrompt.trim()) {
-    $("instructions").value = "";
-  }
-  appliedTemplatePrompt = "";
+  const chk = $("useTemplateChk");
+  chk.checked = false;
+  chk.disabled = true;
+  $("tplToggleLabel").textContent = "— none selected";
   renderTemplateDropdown("");
+  refreshPromptPreview();
 }
 
 $("templateSearch").addEventListener("focus", (e) =>
@@ -826,8 +1048,7 @@ async function suggestTemplates() {
 }
 
 // --- Template editor (edit built-ins, create/delete custom) --------------
-const templatesModal = $("templatesModal");
-
+// Lives in the "Prompt Templates" viewport; loaded when that nav tab opens.
 function tplEditMsg(msg, kind = "") {
   const el = $("tplEditMsg");
   el.textContent = msg;
@@ -988,16 +1209,6 @@ async function refreshTemplatesEverywhere() {
   suggestTemplates();
 }
 
-$("editTemplatesBtn").addEventListener("click", () => {
-  templatesModal.classList.remove("hidden");
-  tplEditMsg("");
-  loadTemplateEditors();
-});
-$("closeTemplates").addEventListener("click", () =>
-  templatesModal.classList.add("hidden"));
-templatesModal.addEventListener("click", (e) => {
-  if (e.target === templatesModal) templatesModal.classList.add("hidden");
-});
 $("newTemplateBtn").addEventListener("click", () => {
   const wrap = $("templateEditors");
   wrap.insertBefore(templateEditorCard(null), wrap.firstChild);
@@ -1006,8 +1217,7 @@ $("newTemplateBtn").addEventListener("click", () => {
 loadTemplates();
 
 // --- Built-in masking patterns (per log source, editable) ----------------
-const patternsModal = $("patternsModal");
-
+// Lives in the "Masking Rules" viewport; loaded when that nav tab opens.
 function builtinMsg(msg, kind = "") {
   const el = $("builtinMsg");
   el.textContent = msg;
@@ -1134,14 +1344,10 @@ async function loadBuiltinPatterns() {
   }
 }
 
+// Shortcut from the Settings drawer → jump to the Masking Rules viewport.
 $("openPatternsBtn").addEventListener("click", () => {
-  patternsModal.classList.remove("hidden");
-  builtinMsg("");
-  loadBuiltinPatterns();
-});
-$("closePatterns").addEventListener("click", () => patternsModal.classList.add("hidden"));
-patternsModal.addEventListener("click", (e) => {
-  if (e.target === patternsModal) patternsModal.classList.add("hidden");
+  closeSetupDrawer();
+  switchView("rules");
 });
 
 // --- Conversation (mask -> provider -> un-mask, with follow-ups) ----------
@@ -1188,11 +1394,24 @@ function renderTranscript(transcript) {
     .join("\n\n");
 }
 
+// Toggle the analyse button's loading state + the indeterminate progress bar.
+function setAnalyzing(on) {
+  const btn = $("analyzeBtn");
+  $("analyzeProgress").classList.toggle("hidden", !on);
+  if (on) {
+    if (!btn.dataset.label) btn.dataset.label = btn.innerHTML;
+    btn.innerHTML = "⏳ Analysing…";
+    btn.disabled = true;
+  } else if (btn.dataset.label) {
+    btn.innerHTML = btn.dataset.label;
+  }
+}
+
 async function doAnalyze(acknowledgeLeaks = false) {
   const logs = $("logs").value.trim();
   if (!logs) return setStatus("Paste some logs first.", "err");
   const btn = $("analyzeBtn");
-  btn.disabled = true;
+  setAnalyzing(true);
   setStatus("Masking locally and sending masked logs to the AI…");
   try {
     const r = await fetch("/analyze", {
@@ -1202,7 +1421,7 @@ async function doAnalyze(acknowledgeLeaks = false) {
         logs,
         categories: selectedCategories(),
         custom_terms: customTerms(),
-        instructions: $("instructions").value.trim() || null,
+        instructions: effectiveInstructions() || null,
         structured: $("structuredChk").checked,
         use_system: $("useSystemChk").checked,
         acknowledge_leaks: acknowledgeLeaks,
@@ -1222,7 +1441,7 @@ async function doAnalyze(acknowledgeLeaks = false) {
     CONV.id = d.conversation_id;
     CONV.model = d.model;
     chatClear();
-    const instr = $("instructions").value.trim();
+    const instr = effectiveInstructions();
     addBubble("user",
       `📄 Raw log submitted — <strong>${d.masked_count}</strong> value(s) masked before sending.` +
       (instr ? `<br>📝 ${escapeHtml(instr)}` : ""),
@@ -1243,8 +1462,8 @@ async function doAnalyze(acknowledgeLeaks = false) {
     $("followUp").focus();
   } catch (e) {
     setStatus(e.message, "err");
-    if (!CONV.id) btn.disabled = false;
   } finally {
+    setAnalyzing(false);
     if (!CONV.id) btn.disabled = false;
   }
 }
@@ -1368,6 +1587,7 @@ $("endConvBtn").addEventListener("click", async () => {
   $("redBadge").textContent = "Conversation ended. Ready for a new log.";
   $("redBadge").className = "redaction-badge";
   setStatus("Conversation ended.", "ok");
+  refreshPromptPreview();
 });
 
 // --- Requests tab: audit log of everything sent to the AI ----------------
@@ -1376,19 +1596,67 @@ function reqBlock(title, html) {
          `<pre class="req-pre">${html}</pre></div>`;
 }
 
+let lastRequests = [];   // most recent fetch, re-filtered client-side
+
 async function loadRequests() {
   const wrap = $("requestList");
   try {
     const d = await (await fetch("/requests")).json();
     if (d.file) $("reqFile").textContent = d.file;
-    if (!d.requests.length) {
-      wrap.innerHTML =
-        `<p class="hint">No AI requests in view. Run an analysis, a ` +
-        `follow-up, or a connection test and it will appear here.</p>`;
-      return;
-    }
+    lastRequests = d.requests || [];
+    renderRequests();
+  } catch (e) {
+    wrap.innerHTML = `<p class="hint">Could not load the request log: ` +
+                     `${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// Parse an audit "YYYY-MM-DD HH:MM:SS" timestamp to epoch ms (NaN if invalid).
+function parseReqTime(t) {
+  if (!t) return NaN;
+  return new Date(t.replace(" ", "T")).getTime();
+}
+
+// Render lastRequests into the list, applying the From/To datetime filter.
+function renderRequests() {
+  const wrap = $("requestList");
+  const countEl = $("auditCount");
+  const fromMs = $("auditFrom").value ? new Date($("auditFrom").value).getTime() : null;
+  // The To input has minute precision — include the whole selected minute.
+  const toMs = $("auditTo").value ? new Date($("auditTo").value).getTime() + 59999 : null;
+  const filtering = fromMs !== null || toMs !== null;
+
+  const rows = lastRequests.filter((r) => {
+    if (!filtering) return true;
+    const ts = parseReqTime(r.time);
+    if (Number.isNaN(ts)) return false;            // can't place it in range
+    if (fromMs !== null && ts < fromMs) return false;
+    if (toMs !== null && ts > toMs) return false;
+    return true;
+  });
+
+  if (countEl) {
+    countEl.textContent = filtering
+      ? `Showing ${rows.length} of ${lastRequests.length}`
+      : (lastRequests.length ? `${lastRequests.length} request(s)` : "");
+  }
+
+  if (!lastRequests.length) {
+    wrap.innerHTML =
+      `<p class="hint">No AI requests in view. Run an analysis, a ` +
+      `follow-up, or a connection test and it will appear here.</p>`;
+    return;
+  }
+  if (!rows.length) {
+    wrap.innerHTML =
+      `<p class="hint">No requests in the selected date/time range. ` +
+      `Adjust the filter or press <strong>Clear</strong>.</p>`;
+    return;
+  }
+
+  {
     wrap.innerHTML = "";
-    for (const r of d.requests) {
+    for (const r of rows) {
       const det = document.createElement("details");
       det.className = "req-item " + (r.ok ? "ok" : "err");
       const sum = document.createElement("summary");
@@ -1425,9 +1693,6 @@ async function loadRequests() {
       det.appendChild(body);
       wrap.appendChild(det);
     }
-  } catch (e) {
-    wrap.innerHTML = `<p class="hint">Could not load the request log: ` +
-                     `${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1437,8 +1702,17 @@ $("clearReqBtn").addEventListener("click", async () => {
   loadRequests();
 });
 
+// Date/time range filter — re-renders the already-loaded entries (no refetch).
+$("auditFrom").addEventListener("input", renderRequests);
+$("auditTo").addEventListener("input", renderRequests);
+$("auditFilterClear").addEventListener("click", () => {
+  $("auditFrom").value = "";
+  $("auditTo").value = "";
+  renderRequests();
+});
+
 // --- Setup / providers ---------------------------------------------------
-const modal = $("settingsModal");
+// Settings live in a right-side slide-out drawer (see openSetupDrawer below).
 let REGISTRY = {};       // provider metadata from /config
 let CONFIG = {};         // current saved settings
 let CONFIGURED = {};     // provider -> bool (has a key)
@@ -1511,6 +1785,32 @@ async function refreshModels(pid, { announce = false } = {}) {
 }
 
 // Populate the inline provider + model dropdowns (configured providers only).
+// Sidebar connection badge: green when the active provider has a key/sign-in,
+// amber when a provider is configured but the active one isn't ready, grey when
+// nothing is set up.
+function updateConnectionBadge() {
+  const dot = $("activeConnStatus");
+  const label = $("activeConnLabel");
+  if (!dot || !label) return;
+  const meta = REGISTRY[CONFIG.provider];
+  const ready = !!CONFIGURED[CONFIG.provider];
+  const anyReady = Object.values(CONFIGURED).some(Boolean);
+  dot.className = "status-dot" + (ready ? " connected" : anyReady ? " configured" : "");
+  // The badge always reads "Settings" (it opens the settings drawer); the live
+  // provider/model status lives in the dot colour + hover tooltip.
+  label.textContent = "⚙ Settings";
+  let status;
+  if (!meta) {
+    status = "No provider set up — open Settings to configure";
+  } else if (ready) {
+    status = `${meta.label} · ${modelFor(CONFIG.provider) || "ready"}`;
+  } else {
+    status = `${meta.label} · add API key`;
+  }
+  const btn = $("drawerToggleBtn");
+  if (btn) btn.title = status;
+}
+
 function renderActiveProvider() {
   const pSel = $("activeProviderSelect");
   const mSel = $("activeModelSelect");
@@ -1519,6 +1819,8 @@ function renderActiveProvider() {
   const available = Object.keys(REGISTRY).filter(
     (pid) => CONFIGURED[pid] || pid === CONFIG.provider
   );
+
+  updateConnectionBadge();
 
   pSel.innerHTML = "";
   if (!available.length) {
@@ -1706,16 +2008,37 @@ function collectExtra() {
   return out;
 }
 
-function openSetup() {
-  modal.classList.remove("hidden");
+// Settings drawer open/close (replaces the old centered modal).
+const settingsDrawer = $("settingsDrawer");
+const drawerBackdrop = $("drawerBackdrop");
+
+function openSetupDrawer() {
+  settingsDrawer.classList.add("open");
+  drawerBackdrop.classList.add("open");
+  switchDrawerTab("connection");
   renderModalForProvider();
-  renderSetupTerms();
 }
-$("settingsBtn").addEventListener("click", openSetup);
-$("openSetupInline").addEventListener("click", openSetup);
-$("viewTermsBtn").addEventListener("click", () => {
-  openSetup();
-  $("setupTermsList").scrollIntoView({ behavior: "smooth", block: "center" });
+function closeSetupDrawer() {
+  settingsDrawer.classList.remove("open");
+  drawerBackdrop.classList.remove("open");
+}
+// Back-compat alias for any remaining callers.
+const openSetup = openSetupDrawer;
+
+$("drawerToggleBtn").addEventListener("click", openSetupDrawer);
+$("closeDrawerBtn").addEventListener("click", closeSetupDrawer);
+drawerBackdrop.addEventListener("click", closeSetupDrawer);
+
+// Settings drawer tabs — Connection / System Prompt / Masking.
+function switchDrawerTab(name) {
+  document.querySelectorAll("#drawerTabs .drawer-tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.stab === name));
+  document.querySelectorAll(".drawer-pane").forEach((p) =>
+    p.classList.toggle("active", p.id === `stab-${name}`));
+}
+$("drawerTabs").addEventListener("click", (e) => {
+  const btn = e.target.closest(".drawer-tab");
+  if (btn) switchDrawerTab(btn.dataset.stab);
 });
 
 // Per-provider default model — save immediately when changed (no Save needed).
@@ -1760,8 +2083,6 @@ $("makeDefaultChk").addEventListener("change", async (e) => {
   renderActiveProvider();
   setupMsg(`✓ ${REGISTRY[selectedProvider].label} is now your default provider.`, "ok");
 });
-$("closeSettings").addEventListener("click", () => modal.classList.add("hidden"));
-modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
 // Save: persist key (if entered), this provider's default model, its provider
 // fields, and optionally promote it to the default provider.

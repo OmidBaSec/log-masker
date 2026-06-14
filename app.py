@@ -114,6 +114,15 @@ class PreviewRequest(BaseModel):
     custom_terms: List[str] = []
 
 
+class PromptPreviewRequest(BaseModel):
+    logs: str
+    categories: List[str] = ["identities", "network", "secrets"]
+    custom_terms: List[str] = []
+    instructions: Optional[str] = None
+    structured: bool = True
+    use_system: bool = True
+
+
 class ConfigRequest(BaseModel):
     provider: str
     make_default: bool = False        # set this provider as the default?
@@ -262,6 +271,21 @@ def get_system_prompt(cfg: dict) -> str:
     otherwise the built-in default."""
     saved = (cfg.get("system_prompt") or "").strip()
     return saved or DEFAULT_SYSTEM_PROMPT
+
+
+def build_system(cfg: dict, use_system: bool, instructions: Optional[str],
+                 structured: bool) -> str:
+    """Assemble the exact system prompt sent to the provider: the saved system
+    prompt (optional), any extra instructions, and the structured-verdict
+    schema (optional). Shared by /analyze and /preview_prompt so the preview
+    matches what is actually sent."""
+    system = get_system_prompt(cfg) if use_system else ""
+    if instructions and instructions.strip():
+        sep = "\n\nAdditional user instructions:\n" if system else ""
+        system += sep + instructions.strip()
+    if structured:
+        system += verdict_mod.SCHEMA_PROMPT
+    return system
 
 
 def get_api_key(provider: str) -> Optional[str]:
@@ -622,6 +646,19 @@ def preview(req: PreviewRequest):
             "warnings": warnings}
 
 
+@app.post("/preview_prompt")
+def preview_prompt(req: PromptPreviewRequest):
+    """Assemble the EXACT prompt that would be sent: the system prompt (with any
+    instructions/schema) plus the masked log as the user message. No API call —
+    lets the analyst review the full prompt before sending."""
+    cfg = load_config()
+    terms = _merged_terms(req.custom_terms)
+    masked, mapping = masker.mask(req.logs, req.categories, terms,
+                                  store.get_patterns())
+    system = build_system(cfg, req.use_system, req.instructions, req.structured)
+    return {"system": system, "user": masked, "masked_count": len(mapping)}
+
+
 # ---------------------------------------------------------------------------
 # Conversations. Each "Mask & Analyse" starts one; follow-up questions are sent
 # with the full (masked) history so the AI keeps context. State lives only in
@@ -794,12 +831,7 @@ def analyze(req: AnalyzeRequest):
 
     # 3. Build the prompt and call the provider with ONLY the masked text.
     #    The system prompt is optional — the analyst can turn it off per run.
-    system = get_system_prompt(cfg) if req.use_system else ""
-    if req.instructions:
-        sep = "\n\nAdditional user instructions:\n" if system else ""
-        system += sep + req.instructions.strip()
-    if req.structured:
-        system += verdict_mod.SCHEMA_PROMPT
+    system = build_system(cfg, req.use_system, req.instructions, req.structured)
 
     conv_id = uuid.uuid4().hex[:12]
     messages = [{"role": "user", "content": masked}]
