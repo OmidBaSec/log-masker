@@ -391,11 +391,22 @@ function loadLogFile(file) {
   if (file.size > MAX_FILE_MB * 1024 * 1024) {
     return setStatus(`File too large — max ${MAX_FILE_MB} MB of text logs.`, "err");
   }
+  // Modern Excel (.xlsx/.xlsm) is a binary zip — convert it to CSV locally
+  // (parsed by our own FastAPI process) before masking.
+  if (/\.(xlsx|xlsm)$/i.test(file.name)) {
+    return loadExcelFile(file);
+  }
+  // Legacy/other binary spreadsheet formats we can't parse.
+  if (/\.(xls|numbers|ods)$/i.test(file.name)) {
+    return setStatus(
+      "That spreadsheet format isn't supported. Save it as .xlsx or export to " +
+      "CSV, then upload that.", "err");
+  }
   const reader = new FileReader();
   reader.onload = () => {
     const text = String(reader.result || "");
     if (text.includes("\u0000")) {
-      return setStatus("That looks like a binary file — only text logs are supported.", "err");
+      return setStatus("That looks like a binary file — only text logs are supported. For spreadsheets, export as CSV first.", "err");
     }
     uploadedFileName = file.name;
     $("logs").value = text;
@@ -407,47 +418,60 @@ function loadLogFile(file) {
   reader.readAsText(file);
 }
 
+// Send an .xlsx/.xlsm to the local server, which returns CSV text. The masked
+// download then keeps the .csv extension (the original Excel binary can't hold
+// the redacted text). Nothing leaves the machine — this is the local process.
+async function loadExcelFile(file) {
+  setStatus(`Converting ${file.name} to CSV locally…`);
+  try {
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    const r = await fetch("/convert_xlsx", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Could not convert the spreadsheet.");
+    uploadedFileName = d.filename;   // e.g. report.csv
+    $("logs").value = d.csv;
+    showFileChip(d.filename, d.csv);
+    const sheetNote = d.sheets > 1 ? ` (${d.sheets} sheets)` : "";
+    setStatus(`Converted ${d.name}${sheetNote} → ${d.filename}. Masking locally…`);
+    scheduleAutoPreview();
+  } catch (e) {
+    setStatus(e.message, "err");
+  }
+}
+
 $("uploadBtn").addEventListener("click", () => $("logFile").click());
 $("logFile").addEventListener("change", (e) => {
   loadLogFile(e.target.files && e.target.files[0]);
   e.target.value = "";          // allow re-selecting the same file
 });
 
-// Drag & drop onto the raw-logs box.
+// --- Drag & drop ---------------------------------------------------------
+// Highlight the upload zone / logs box while a file is dragged over them.
 const logsBox = $("logs");
-["dragenter", "dragover"].forEach((ev) =>
-  logsBox.addEventListener(ev, (e) => {
-    e.preventDefault();
-    logsBox.classList.add("dragover");
-  }));
-["dragleave", "drop"].forEach((ev) =>
-  logsBox.addEventListener(ev, () => logsBox.classList.remove("dragover")));
-logsBox.addEventListener("drop", (e) => {
-  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) {
-    e.preventDefault();
-    loadLogFile(f);
-  }
+const dropzone = $("dropzoneBox");
+[logsBox, dropzone].forEach((el) => {
+  if (!el) return;
+  ["dragenter", "dragover"].forEach((ev) =>
+    el.addEventListener(ev, (e) => {
+      e.preventDefault();
+      el.classList.add("dragover");
+    }));
+  ["dragleave", "dragend", "drop"].forEach((ev) =>
+    el.addEventListener(ev, () => el.classList.remove("dragover")));
 });
 
-// Drag & drop onto the styled dropzone (around the upload button) too.
-const dropzone = $("dropzoneBox");
-if (dropzone) {
-  ["dragenter", "dragover"].forEach((ev) =>
-    dropzone.addEventListener(ev, (e) => {
-      e.preventDefault();
-      dropzone.classList.add("dragover");
-    }));
-  ["dragleave", "drop"].forEach((ev) =>
-    dropzone.addEventListener(ev, () => dropzone.classList.remove("dragover")));
-  dropzone.addEventListener("drop", (e) => {
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) {
-      e.preventDefault();
-      loadLogFile(f);
-    }
-  });
-}
+// Without this the browser opens a file dropped anywhere on the page in a new
+// tab. Capture the drop at the window level so dropping the file anywhere in
+// the app loads it as a log (and brings the Workspace into view).
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  if (typeof switchView === "function") switchView("workspace");
+  loadLogFile(f);
+});
 
 // Hide the file chip when the box is emptied by hand.
 logsBox.addEventListener("input", () => {
@@ -730,7 +754,8 @@ function addCustomTerm(raw) {
   const term = (raw || "").trim();
   if (!term) return;
   const values = currentTermValues();
-  if (!values.includes(term)) {
+  // Case-insensitive dedupe — terms are matched without regard to case.
+  if (!values.some((v) => v.toLowerCase() === term.toLowerCase())) {
     values.push(term);
     $("customTerms").value = values.join("\n");
     renderCustomTermsChips();

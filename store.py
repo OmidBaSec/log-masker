@@ -71,8 +71,18 @@ def get_terms() -> List[str]:
 
 
 def set_terms(terms: List[str]) -> None:
+    # Dedupe case-insensitively (terms are matched case-insensitively, so
+    # "ACME" and "acme" are the same rule) while keeping the first-seen casing.
     data = _load()
-    data["custom_terms"] = list(dict.fromkeys(t.strip() for t in terms if t.strip()))
+    seen = set()
+    out = []
+    for t in terms:
+        t = t.strip()
+        if not t or t.lower() in seen:
+            continue
+        seen.add(t.lower())
+        out.append(t)
+    data["custom_terms"] = out
     _save(data)
 
 

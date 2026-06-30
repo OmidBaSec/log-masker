@@ -27,7 +27,7 @@ from collections import deque
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -657,6 +657,47 @@ def preview_prompt(req: PromptPreviewRequest):
                                   store.get_patterns())
     system = build_system(cfg, req.use_system, req.instructions, req.structured)
     return {"system": system, "user": masked, "masked_count": len(mapping)}
+
+
+@app.post("/convert_xlsx")
+async def convert_xlsx(file: UploadFile = File(...)):
+    """Convert an uploaded spreadsheet (.xlsx/.xlsm) to CSV text so it can flow
+    through the same masking pipeline. Parsing happens in this local process —
+    the raw file never leaves the machine, exactly like pasted logs."""
+    name = (file.filename or "").lower()
+    if not name.endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "Only .xlsx / .xlsm spreadsheets can be converted.")
+    try:
+        import openpyxl
+    except ImportError:
+        raise HTTPException(
+            500, "Excel support needs openpyxl. Run: pip install openpyxl")
+
+    import io
+    import csv
+    data = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as e:
+        raise HTTPException(400, f"Could not read the spreadsheet: {e}")
+
+    out = io.StringIO()
+    writer = csv.writer(out)
+    sheets = wb.worksheets
+    for idx, ws in enumerate(sheets):
+        if len(sheets) > 1:
+            out.write(f"# --- Sheet: {ws.title} ---\n")
+        for row in ws.iter_rows(values_only=True):
+            if all(c is None for c in row):
+                continue   # skip fully-empty rows
+            writer.writerow(["" if c is None else c for c in row])
+        if idx < len(sheets) - 1:
+            out.write("\n")
+    wb.close()
+
+    base = re.sub(r"\.(xlsx|xlsm)$", "", file.filename or "spreadsheet", flags=re.I)
+    return {"csv": out.getvalue(), "filename": base + ".csv",
+            "sheets": len(sheets), "name": file.filename}
 
 
 # ---------------------------------------------------------------------------

@@ -49,9 +49,9 @@
           <div class="dropzone" id="dropzoneBox">
             <button id="uploadBtn" class="btn btn-secondary" type="button">📎 Upload log file</button>
             <span id="fileChip" class="file-chip hidden"></span>
-            <p class="hint" style="margin-top: 8px;">or drag &amp; drop text logs here</p>
+            <p class="hint" style="margin-top: 8px;">or drag &amp; drop logs / Excel here</p>
             <input type="file" id="logFile" style="display: none;"
-              accept=".log,.txt,.csv,.json,.jsonl,.xml,.syslog,.out,text/plain" />
+              accept=".log,.txt,.csv,.json,.jsonl,.xml,.syslog,.out,.xlsx,.xlsm,text/plain" />
           </div>
 
           <div class="editor-wrapper">
@@ -206,7 +206,7 @@
           <div class="panel-header">
             <h2>Always-Mask Custom Terms</h2>
           </div>
-          <p class="hint" style="margin-bottom: 12px;">Words and codenames always replaced with placeholders.</p>
+          <p class="hint" style="margin-bottom: 12px;">Words and codenames always replaced with placeholders. Matching is <strong>not case-sensitive</strong> — <code>ACME</code> also masks <code>acme</code> / <code>Acme</code>.</p>
 
           <div class="chip-container" id="customTermsChipWrapper">
             <input type="text" id="customTermsInput" class="chip-input" placeholder="Type a term and press Enter…" />
