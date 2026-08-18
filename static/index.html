@@ -20,6 +20,7 @@
       <button class="nav-item active" data-view="workspace">💻 Workspace</button>
       <button class="nav-item" data-view="rules">🧩 Masking Rules</button>
       <button class="nav-item" data-view="templates">🎯 Prompt Templates</button>
+      <button class="nav-item" data-view="vault">🗄️ Entity Vault</button>
       <button class="nav-item" data-view="audit">🛡️ Audit Trail</button>
     </div>
     <div class="sidebar-footer">
@@ -116,6 +117,10 @@
                 <label class="structured-toggle" style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
                   <input type="checkbox" id="structuredChk" checked />
                   <span>Structured Verdict <small class="hint">— standardized SOC threat card + JSON</small></span>
+                </label>
+                <label class="structured-toggle" id="vaultCtxRow" style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+                  <input type="checkbox" id="vaultContextChk" checked />
+                  <span>Cross-incident context <small class="hint">— vault history of recurring entities (placeholder stats only, no real values)</small></span>
                 </label>
               </div>
               <div class="control-select">
@@ -264,6 +269,46 @@
 
         <div id="templateEditors"
           style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; overflow-y: auto; flex: 1; min-height: 0; align-content: start;"></div>
+      </div>
+    </div>
+
+    <!-- VIEWPORT: ENTITY VAULT -->
+    <div class="viewport" id="vault-viewport">
+      <div class="work-panel" style="height: 100%;">
+        <div class="panel-header">
+          <h2>Persistent Entity Vault</h2>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <label class="structured-toggle" style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; margin-right: 8px;">
+              <input type="checkbox" id="vaultEnabledChk" />
+              <span>Vault enabled</span>
+            </label>
+            <button id="vaultRefreshBtn" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">↻ Refresh</button>
+            <button id="vaultClearBtn" class="btn btn-danger-ghost" style="padding: 6px 12px; font-size: 12px;"
+              title="Wipe every entity and its incident history — new logs start numbering from [TYPE_1] again">🗑 Clear vault</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-bottom: 12px;">
+          Placeholders are stable across <strong>all</strong> analyses: once a value becomes <code>[HOST_12]</code> it stays
+          <code>[HOST_12]</code> in every future incident, so recurring hosts, users, and IPs can be correlated across cases —
+          and that history can be attached to prompts as <strong>placeholder statistics only</strong>. Real values are stored
+          encrypted in <code id="vaultFile">entity_vault.enc</code> (key in your OS keychain) and never leave this machine.
+        </p>
+        <p id="vaultMsg" class="status"></p>
+
+        <div class="audit-filter">
+          <input type="text" id="vaultSearch" class="dropdown" style="flex: 1; max-width: 340px;"
+            placeholder="Filter by alias, type, or real value…" autocomplete="off" />
+          <span id="vaultCount" class="hint"></span>
+        </div>
+
+        <div style="overflow-y: auto; flex: 1; min-height: 0;">
+          <table class="maptable" id="vaultTable">
+            <thead>
+              <tr><th>Alias</th><th>Type</th><th>Real value (local)</th><th>Incidents</th><th>First seen</th><th>Last seen</th><th></th></tr>
+            </thead>
+            <tbody id="vaultBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 

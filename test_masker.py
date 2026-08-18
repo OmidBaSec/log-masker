@@ -1,6 +1,20 @@
 """Quick checks for the masking engine. Run: python test_masker.py"""
 
+import os
+import tempfile
+
 import masker
+
+# The app-level tests below (analyze/chat) would otherwise write their test
+# entities into the REAL entity vault — point it at a throwaway file first.
+try:
+    from cryptography.fernet import Fernet
+    import vault
+    vault.configure(os.path.join(tempfile.mkdtemp(prefix="masker_test_"),
+                                 "vault.enc"),
+                    Fernet.generate_key().decode())
+except ImportError:
+    pass
 
 ALL = ["identities", "network", "secrets"]
 
@@ -960,14 +974,18 @@ def test_system_prompt():
         check("custom prompt persisted",
               appmod.get_system_prompt_route()["is_custom"])
 
+        # vault_context off: these checks assert the EXACT system string, and
+        # a repeated value would otherwise append cross-incident context.
         res = appmod.analyze(appmod.AnalyzeRequest(
-            logs="user=jsmith from 10.0.0.1", structured=False, use_system=True))
+            logs="user=jsmith from 10.0.0.1", structured=False, use_system=True,
+            vault_context=False))
         appmod.CONVERSATIONS.pop(res["conversation_id"], None)
         check("custom system prompt sent", captured["system"] == "ROBOT analyst.")
 
         # Toggle off: no system prompt sent (only instructions, if any).
         res = appmod.analyze(appmod.AnalyzeRequest(
-            logs="user=jsmith from 10.0.0.1", structured=False, use_system=False))
+            logs="user=jsmith from 10.0.0.1", structured=False, use_system=False,
+            vault_context=False))
         appmod.CONVERSATIONS.pop(res["conversation_id"], None)
         check("system prompt suppressed when toggled off", captured["system"] == "")
 

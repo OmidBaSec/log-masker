@@ -719,7 +719,8 @@ def _exact_known_pattern(value: str) -> "re.Pattern":
 def mask(text: str, enabled: List[str],
          custom_terms: List[str] = None,
          custom_patterns: List[Dict[str, str]] = None,
-         base_mapping: Dict[str, str] = None) -> Tuple[str, Dict[str, str]]:
+         base_mapping: Dict[str, str] = None,
+         base_counters: Dict[str, int] = None) -> Tuple[str, Dict[str, str]]:
     """
     Return (masked_text, mapping) where mapping maps placeholder -> real value.
 
@@ -735,6 +736,9 @@ def mask(text: str, enabled: List[str],
     where no generic pattern would match it, e.g. a bare username typed in a
     follow-up question), new values continue the numbering, and the returned
     mapping is cumulative.
+    `base_counters` sets per-label numbering floors on top of what
+    `base_mapping` implies. The entity vault uses this so that a forgotten
+    entity's number is retired: a new value can never inherit an old alias.
     """
     enabled_set = set(enabled)
 
@@ -825,6 +829,11 @@ def mask(text: str, enabled: List[str],
             reverse[(m.group(1), real)] = ph
             counters[m.group(1)] = max(counters.get(m.group(1), 0),
                                        int(m.group(2)))
+    for label, n in (base_counters or {}).items():
+        try:
+            counters[label] = max(counters.get(label, 0), int(n))
+        except (TypeError, ValueError):
+            continue
 
     # Replace from the end so earlier indices stay valid.
     spans.sort(key=lambda x: x[0], reverse=True)

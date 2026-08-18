@@ -17,6 +17,7 @@ Choose one in **⚙ Setup** (provider + model + API key):
 | **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-3.5-flash, 3.1-pro, 3.1-flash-lite, 2.5-pro |
 | **Microsoft 365 Copilot** | Microsoft Graph (`/beta/copilot`) | **OAuth sign-in** + Copilot license + Entra app (see below) |
 | **Microsoft Copilot (Azure OpenAI)** | your Azure resource | API key + endpoint + deployment + api-version |
+| **Local model (Ollama)** | `http://127.0.0.1:11434` (configurable) | **No key, fully local** — for logs that must not reach any cloud, even masked |
 
 ### Microsoft 365 Copilot (OAuth)
 
@@ -48,6 +49,27 @@ No client secret is needed (public client + PKCE). Tokens are cached locally in
 
 > The Azure OpenAI option ("Microsoft Copilot (Azure OpenAI)") is the simpler,
 > key-based path if you don't specifically need M365 Copilot's tenant grounding.
+
+### Local model (Ollama) — for restricted logs
+
+Masking makes cloud analysis safe for most logs, but some log classes must not
+leave the machine **even masked** (classified environments, contractual
+restrictions, air-gapped sites). The Ollama provider covers that tier: the
+model runs on this machine, so the entire pipeline — masking, analysis,
+restore — is local end to end. Everything else works identically: templates,
+structured verdicts, conversations, leak guard, audit log, entity vault.
+
+Setup: [install Ollama](https://ollama.com/download), pull a model
+(`ollama pull llama3.1`), then pick **Local model (Ollama)** in ⚙ Setup — no
+API key. The model dropdown lists whatever your Ollama instance has pulled
+(live from its `/api/tags`); the endpoint is configurable for a shared
+inference box on your network (default `http://127.0.0.1:11434`). The provider
+card shows **✓ reachable / offline** instead of key status. Local inference
+gets a 10-minute request timeout — big models on CPU are slow.
+
+> Small local models write noticeably weaker analyses than the cloud models.
+> Prefer the largest model your hardware can run (e.g. `llama3.1:70b` >
+> `llama3.1:8b`) for anything beyond a quick triage.
 
 API keys are stored in your **OS keychain** (via `keyring`), never in the
 browser or in any file. Non-secret settings (default provider, per-provider
@@ -316,6 +338,32 @@ into a SOAR incident or case record. Follow-up questions update the card if the
 assessment changes. The parsing is on the *masked* response and tolerant of
 malformed output — a missing or broken block just falls back to plain prose.
 
+### Persistent entity vault (cross-incident correlation)
+
+By default, placeholders are stable across your **entire history**, not just
+one conversation: once `WS-FIN-07` becomes `[HOST_12]`, it is `[HOST_12]` in
+every future incident. The vault stores each entity (placeholder, real value,
+first/last seen) together with the incidents it appeared in and the structured
+verdict the AI reached — encrypted in `entity_vault.enc` with a key held in
+your **OS keychain** (git-ignored; real values never leave the machine).
+
+That unlocks cross-incident correlation without exposing data:
+
+- **Cross-incident context in the prompt** — with the *Cross-incident
+  context* toggle on (default), recurring entities get a history block
+  appended to the system prompt, e.g. `[HOST_12]: seen in 3 prior analyses
+  (first 2026-06-14, last 2026-07-01; verdicts: true_positive ×2)`. The AI
+  can reason "this host is a repeat offender" while seeing **placeholder
+  statistics only** — ids, dates, counts, verdict labels; never real values.
+  The block appears verbatim in the full-prompt preview and the audit log.
+- **🗄 Entity Vault view** — every remembered entity with its alias, real
+  value (local), incident history and per-incident verdicts; filter by alias,
+  type, or value. **✕ forget** removes one entity — its number is *retired*,
+  never reused, so an old analysis can never silently point at a different
+  entity. **🗑 Clear vault** wipes everything and restarts numbering.
+- **Vault enabled** toggle (persisted) switches the feature off entirely:
+  numbering restarts per conversation and nothing new is remembered.
+
 ### Conversations & masking
 
 Follow-up questions are masked with the **same cumulative mapping** as the
@@ -330,4 +378,6 @@ memory — ending one (or restarting the server) forgets it.
 
 ```bash
 python test_masker.py
+python test_vault.py
+python test_providers.py
 ```

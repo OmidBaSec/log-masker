@@ -39,6 +39,7 @@ import templates
 import verdict as verdict_mod
 import leakguard
 import store
+import vault
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -62,12 +63,15 @@ DEFAULT_CONFIG = {
         "google": "gemini-3.5-flash",
         "azure": "",
         "m365copilot": "",
+        "ollama": "",
     },
+    "ollama_endpoint": "",
     "azure_endpoint": "",
     "azure_deployment": "",
     "azure_api_version": "2024-08-01-preview",
     "m365_tenant_id": "",
     "m365_client_id": "",
+    "vault_enabled": True,
 }
 
 # Per-provider environment-variable fallbacks for the API key.
@@ -106,6 +110,8 @@ class AnalyzeRequest(BaseModel):
     structured: bool = True              # ask the model for a verdict schema
     acknowledge_leaks: bool = False      # analyst confirmed leak-guard findings
     use_system: bool = True              # send the saved system prompt?
+    vault_context: bool = True           # attach cross-incident entity history
+                                         # (placeholder stats only) to the prompt
 
 
 class PreviewRequest(BaseModel):
@@ -121,12 +127,14 @@ class PromptPreviewRequest(BaseModel):
     instructions: Optional[str] = None
     structured: bool = True
     use_system: bool = True
+    vault_context: bool = True
 
 
 class ConfigRequest(BaseModel):
     provider: str
     make_default: bool = False        # set this provider as the default?
     provider_models: dict = {}        # per-provider default model overrides
+    ollama_endpoint: str = ""
     azure_endpoint: str = ""
     azure_deployment: str = ""
     azure_api_version: str = "2024-08-01-preview"
@@ -211,9 +219,18 @@ class ProviderRequest(BaseModel):
     provider: str
 
 
+class VaultEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class VaultForgetRequest(BaseModel):
+    placeholder: str
+
+
 class TestRequest(BaseModel):
     provider: str
     model: str = ""
+    ollama_endpoint: str = ""
     azure_endpoint: str = ""
     azure_deployment: str = ""
     azure_api_version: str = "2024-08-01-preview"
@@ -319,6 +336,9 @@ def get_config():
             signed_in, _ = m365.status(cfg.get("m365_tenant_id", ""),
                                        cfg.get("m365_client_id", ""))
             configured[pid] = signed_in
+        elif not providers.needs_key(pid):
+            # Keyless local provider: "configured" means the endpoint answers.
+            configured[pid] = providers.reachable(pid, cfg)
         else:
             configured[pid] = bool(get_api_key(pid))
     return {
@@ -338,6 +358,7 @@ def set_config(req: ConfigRequest):
         if pid in providers.PROVIDERS:
             cfg["provider_models"][pid] = model
     # Global provider-specific fields.
+    cfg["ollama_endpoint"] = req.ollama_endpoint
     cfg["azure_endpoint"] = req.azure_endpoint
     cfg["azure_deployment"] = req.azure_deployment
     cfg["azure_api_version"] = req.azure_api_version
@@ -360,10 +381,10 @@ def list_models(provider: str):
     if provider in ("m365copilot", "azure"):
         return {"models": [], "error": "This provider has no listable catalog."}
     api_key = get_api_key(provider)
-    if not api_key:
+    if not api_key and providers.needs_key(provider):
         return {"models": [], "error": "No API key saved for this provider."}
     try:
-        models = providers.list_models(provider, api_key, load_config())
+        models = providers.list_models(provider, api_key or "", load_config())
     except providers.ProviderError as e:
         return {"models": [], "error": str(e)}
     except Exception as e:
@@ -519,6 +540,88 @@ def _merged_terms(request_terms: List[str]) -> List[str]:
                                if t.strip()] + store.get_terms()))
 
 
+# --- Persistent entity vault (cross-incident placeholder memory) ----------
+def _vault_on(cfg: dict) -> bool:
+    return bool(cfg.get("vault_enabled", True)) and vault.available()[0]
+
+
+def _vault_seed(cfg: dict):
+    """(base_mapping, base_counters) for masker.mask(): the vault's
+    placeholder->real mapping keeps placeholders stable across incidents (not
+    just across turns), and the counter floors keep a forgotten entity's
+    number retired."""
+    if _vault_on(cfg):
+        return vault.mapping(), vault.counters()
+    return None, None
+
+
+def _used_mapping(mapping: dict, *texts: str) -> dict:
+    """Trim a cumulative mapping to the placeholders that actually occur in
+    `texts`. With the vault seeding every mask run, the cumulative mapping
+    contains the WHOLE vault — the UI and the response should only show the
+    entities of this log/conversation. (Substring test is safe: the closing
+    bracket means "[USER_1]" can never match inside "[USER_10]".)"""
+    return {ph: real for ph, real in mapping.items()
+            if any(ph in t for t in texts)}
+
+
+def _vault_context_block(lines: List[str]) -> str:
+    """A prompt block with the vault's history for recurring entities.
+    Placeholder ids, dates, counts, and verdict labels only — the block is
+    part of the masked payload and must stay as anonymous as the log."""
+    if not lines:
+        return ""
+    return (
+        "\n\nCross-incident context from the analyst's local entity vault. "
+        "Placeholders are stable across ALL past analyses on this system, so "
+        "the same placeholder in the history below refers to the same real "
+        "entity as in the log. Use this to judge whether an entity is a "
+        "repeat offender, a known-benign regular, or newly seen:\n- "
+        + "\n- ".join(lines))
+
+
+@app.get("/vault")
+def vault_overview():
+    """Vault status + every entity with its incident history. Real values are
+    included — this endpoint is local-only, like the mapping in /preview."""
+    cfg = load_config()
+    avail, reason = vault.available()
+    out = {"enabled": bool(cfg.get("vault_enabled", True)),
+           "available": avail, "reason": reason,
+           "warning": vault.status_warning() if avail else "",
+           "file": vault.VAULT_FILE}
+    if avail:
+        out["stats"] = vault.stats()
+        out["entities"] = vault.entities()
+    else:
+        out["stats"] = {"entities": 0, "incidents": 0, "labels": {}}
+        out["entities"] = []
+    return out
+
+
+@app.post("/vault/enabled")
+def vault_set_enabled(req: VaultEnabledRequest):
+    cfg = load_config()
+    cfg["vault_enabled"] = req.enabled
+    save_config(cfg)
+    return {"ok": True, "enabled": req.enabled}
+
+
+@app.post("/vault/forget")
+def vault_forget(req: VaultForgetRequest):
+    """Remove one entity. Its number is retired — never reused for a new
+    value — so old analyses can't silently point at a different entity."""
+    if not vault.forget(req.placeholder.strip()):
+        raise HTTPException(404, "No such entity in the vault.")
+    return {"ok": True}
+
+
+@app.post("/vault/clear")
+def vault_clear():
+    vault.clear()
+    return {"ok": True}
+
+
 # --- Saved regex patterns (applied to every mask run) ---------------------
 @app.get("/patterns")
 def list_patterns():
@@ -638,11 +741,14 @@ def reset_template(req: TemplateIdRequest):
 def preview(req: PreviewRequest):
     """Mask locally and return the masked text + mapping, without any API call.
     Lets you see exactly what would be sent before sending it."""
+    cfg = load_config()
     terms = _merged_terms(req.custom_terms)
+    base, floors = _vault_seed(cfg)
     masked, mapping = masker.mask(req.logs, req.categories, terms,
-                                  store.get_patterns())
+                                  store.get_patterns(), base, floors)
     warnings = leakguard.scan(masked, mapping, terms, req.categories)
-    return {"masked": masked, "mapping": mapping, "count": len(mapping),
+    used = _used_mapping(mapping, masked)
+    return {"masked": masked, "mapping": used, "count": len(used),
             "warnings": warnings}
 
 
@@ -653,10 +759,14 @@ def preview_prompt(req: PromptPreviewRequest):
     lets the analyst review the full prompt before sending."""
     cfg = load_config()
     terms = _merged_terms(req.custom_terms)
+    base, floors = _vault_seed(cfg)
     masked, mapping = masker.mask(req.logs, req.categories, terms,
-                                  store.get_patterns())
+                                  store.get_patterns(), base, floors)
     system = build_system(cfg, req.use_system, req.instructions, req.structured)
-    return {"system": system, "user": masked, "masked_count": len(mapping)}
+    used = _used_mapping(mapping, masked)
+    if _vault_on(cfg) and req.vault_context:
+        system += _vault_context_block(vault.context_lines(used.keys()))
+    return {"system": system, "user": masked, "masked_count": len(used)}
 
 
 @app.post("/convert_xlsx")
@@ -798,12 +908,12 @@ def _call_provider_chat(cfg: dict, provider: str, model: str,
                 raise HTTPException(502, str(e))
             return response
         api_key = get_api_key(provider)
-        if not api_key:
+        if not api_key and providers.needs_key(provider):
             label = providers.PROVIDERS.get(provider, {}).get("label", provider)
             raise HTTPException(
                 400, f"No API key configured for {label}. Open Setup to add one.")
         try:
-            response = providers.call(provider, api_key, model, system,
+            response = providers.call(provider, api_key or "", model, system,
                                       messages, cfg)
         except providers.ProviderError as e:
             raise HTTPException(502, str(e))
@@ -855,10 +965,16 @@ def analyze(req: AnalyzeRequest):
     model = ("microsoft-365-copilot" if provider == "m365copilot"
              else resolve_model(cfg, provider))
 
-    # 1. Mask locally with the saved dictionary.
+    # 1. Mask locally with the saved dictionary. When the entity vault is on,
+    #    it seeds the mapping so placeholders are stable across ALL incidents
+    #    (a value seen last week keeps last week's placeholder) and numbering
+    #    continues globally instead of restarting at _1.
+    vault_on = _vault_on(cfg)
     terms = _merged_terms(req.custom_terms)
+    base, floors = _vault_seed(cfg)
     masked, mapping = masker.mask(req.logs, req.categories, terms,
-                                  store.get_patterns())
+                                  store.get_patterns(), base, floors)
+    used = _used_mapping(mapping, masked)   # entities of THIS log only
 
     # 2. Pre-send leak guard: independent second pass over the MASKED text.
     #    Blocking findings stop everything here — nothing has left the machine
@@ -866,13 +982,20 @@ def analyze(req: AnalyzeRequest):
     warnings = leakguard.scan(masked, mapping, terms, req.categories)
     if leakguard.has_blocking(warnings) and not req.acknowledge_leaks:
         return {"blocked": True, "warnings": warnings,
-                "masked_count": len(mapping)}
+                "masked_count": len(used)}
     leak_info = ({"warnings": warnings, "acknowledged": req.acknowledge_leaks}
                  if warnings else None)
 
     # 3. Build the prompt and call the provider with ONLY the masked text.
     #    The system prompt is optional — the analyst can turn it off per run.
     system = build_system(cfg, req.use_system, req.instructions, req.structured)
+    vault_lines = []
+    if vault_on and req.vault_context:
+        # History of the entities that recur from earlier incidents —
+        # placeholder statistics only, gathered BEFORE this incident is
+        # recorded so "prior" means prior.
+        vault_lines = vault.context_lines(used.keys())
+        system += _vault_context_block(vault_lines)
 
     conv_id = uuid.uuid4().hex[:12]
     messages = [{"role": "user", "content": masked}]
@@ -886,11 +1009,20 @@ def analyze(req: AnalyzeRequest):
         "provider": provider, "model": model, "system": system,
         "messages": messages, "mapping": mapping,
         "categories": req.categories, "custom_terms": terms,
-        "structured": req.structured,
+        "structured": req.structured, "vault_on": vault_on,
     }
 
     # 5. Restore real values locally (prose + structured verdict).
     shaped = _shape_response(raw_response, mapping, req.structured)
+
+    # 6. Record this incident in the vault: its entities become part of the
+    #    permanent cross-incident memory, and the AI's verdict is attached so
+    #    future context can say "verdicts: true_positive ×2".
+    if vault_on:
+        vault.record(conv_id, used)
+        v = shaped.get("verdict")
+        if v:
+            vault.set_verdict(conv_id, v.get("verdict"), v.get("severity"))
 
     return {
         "provider": provider,
@@ -898,9 +1030,12 @@ def analyze(req: AnalyzeRequest):
         "conversation_id": conv_id,
         "transcript": messages,               # masked history (what left/leaves)
         "masked_sent": masked,                # what actually left the machine
-        "mapping": mapping,                   # placeholder -> real (local only)
-        "masked_count": len(mapping),
+        "mapping": used,                      # placeholder -> real (local only)
+        "masked_count": len(used),
         "warnings": warnings,                 # leak-guard findings (if any)
+        "vault": {"enabled": vault_on,        # cross-incident context attached
+                  "recurring": len(vault_lines),
+                  "context": vault_lines},
         **shaped,                             # restored prose + verdict
     }
 
@@ -919,10 +1054,19 @@ def chat_followup(req: FollowUpRequest):
     if not question:
         raise HTTPException(400, "The question is empty.")
 
+    # Base for re-masking: the conversation's cumulative mapping, topped up
+    # with the current vault state — another conversation may have added
+    # entities (and advanced the numbering) since this one started, and a new
+    # value here must not collide with their placeholders.
+    base = conv["mapping"]
+    floors = None
+    if conv.get("vault_on"):
+        base = {**vault.mapping(), **conv["mapping"]}
+        floors = vault.counters()
     masked_q, mapping = masker.mask(question, conv["categories"],
                                     conv["custom_terms"],
                                     store.get_patterns(),
-                                    conv["mapping"])
+                                    base, floors)
     # Pre-send leak guard on the masked question (an analyst can paste raw
     # log content into a follow-up too). Nothing is appended or sent while
     # blocked.
@@ -948,14 +1092,29 @@ def chat_followup(req: FollowUpRequest):
     conv["mapping"] = mapping
 
     shaped = _shape_response(raw_response, mapping, conv.get("structured", False))
+
+    # The conversation's own entities: placeholders that occur anywhere in the
+    # masked transcript (the cumulative mapping also carries the whole vault).
+    used = _used_mapping(mapping, *(m["content"] for m in conv["messages"]))
+
+    # A follow-up can introduce new entities (or a changed verdict) — keep the
+    # vault's incident record for this conversation up to date.
+    if conv.get("vault_on"):
+        vault.record(req.conversation_id,
+                     _used_mapping(mapping, masked_q))
+        v = shaped.get("verdict")
+        if v:
+            vault.set_verdict(req.conversation_id,
+                              v.get("verdict"), v.get("severity"))
+
     return {
         "provider": conv["provider"],
         "model": conv["model"],
         "conversation_id": req.conversation_id,
         "transcript": conv["messages"],
         "masked_question": masked_q,
-        "mapping": mapping,
-        "masked_count": len(mapping),
+        "mapping": used,
+        "masked_count": len(used),
         **shaped,                             # restored prose + (updated) verdict
     }
 

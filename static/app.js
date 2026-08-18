@@ -207,7 +207,7 @@ function showTab(name) {
 // --- Sidebar viewport navigation -----------------------------------------
 const VIEW_TITLES = {
   workspace: "Workspace", rules: "Masking Rules",
-  templates: "Prompt Templates", audit: "Audit Trail",
+  templates: "Prompt Templates", vault: "Entity Vault", audit: "Audit Trail",
 };
 let loadedViews = {};   // lazy-load each secondary dashboard once
 
@@ -231,6 +231,7 @@ function switchView(viewName) {
     tplEditMsg("");
     loadTemplateEditors();
   }
+  if (viewName === "vault") loadVault();
   if (viewName === "audit") loadRequests();
 }
 
@@ -347,6 +348,7 @@ async function refreshPromptPreview() {
         instructions: effectiveInstructions() || null,
         structured: $("structuredChk").checked,
         use_system: $("useSystemChk").checked,
+        vault_context: $("vaultContextChk").checked,
       }),
     });
     const d = await r.json();
@@ -361,7 +363,7 @@ async function refreshPromptPreview() {
 }
 
 // Toggling any prompt component re-renders the preview.
-["useSystemChk", "useTemplateChk", "structuredChk"].forEach((id) =>
+["useSystemChk", "useTemplateChk", "structuredChk", "vaultContextChk"].forEach((id) =>
   $(id).addEventListener("change", schedulePromptPreview));
 $("instructions").addEventListener("input", schedulePromptPreview);
 
@@ -1449,6 +1451,7 @@ async function doAnalyze(acknowledgeLeaks = false) {
         instructions: effectiveInstructions() || null,
         structured: $("structuredChk").checked,
         use_system: $("useSystemChk").checked,
+        vault_context: $("vaultContextChk").checked,
         acknowledge_leaks: acknowledgeLeaks,
       }),
     });
@@ -1467,8 +1470,13 @@ async function doAnalyze(acknowledgeLeaks = false) {
     CONV.model = d.model;
     chatClear();
     const instr = effectiveInstructions();
+    const vaultNote = d.vault && d.vault.recurring
+      ? `<br>🗄 ${d.vault.recurring} recurring entit${d.vault.recurring === 1 ? "y" : "ies"} ` +
+        `known from earlier incidents — cross-incident history attached (placeholder stats only).`
+      : "";
     addBubble("user",
       `📄 Raw log submitted — <strong>${d.masked_count}</strong> value(s) masked before sending.` +
+      vaultNote +
       (instr ? `<br>📝 ${escapeHtml(instr)}` : ""),
       "You");
     const aiBubble = addBubble("ai", aiAnswerHtml(d), `AI · ${d.model}`);
@@ -1615,6 +1623,141 @@ $("endConvBtn").addEventListener("click", async () => {
   refreshPromptPreview();
 });
 
+// --- Entity vault: persistent cross-incident placeholder memory ----------
+let VAULT_ENTITIES = [];
+
+function vaultMsg(msg, kind = "") {
+  const el = $("vaultMsg");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+// Workspace "Cross-incident context" toggle follows the vault's state: no
+// vault, nothing to attach.
+function syncVaultCtxToggle(active, reason = "") {
+  const chk = $("vaultContextChk");
+  chk.disabled = !active;
+  if (!active) chk.checked = false;
+  $("vaultCtxRow").style.opacity = active ? "" : "0.45";
+  $("vaultCtxRow").title = active ? "" : (reason || "The entity vault is disabled.");
+}
+
+function verdictBadge(v) {
+  if (!v) return `<span class="hint">no verdict</span>`;
+  const cls = "v-" + String(v).replace(/_/g, "-");
+  return `<span class="${cls}"><span class="v-badge">${escapeHtml(v)}</span></span>`;
+}
+
+function renderVault() {
+  const q = $("vaultSearch").value.trim().toLowerCase();
+  const body = $("vaultBody");
+  body.innerHTML = "";
+  const rows = VAULT_ENTITIES.filter((e) =>
+    !q ||
+    e.placeholder.toLowerCase().includes(q) ||
+    (FIELD_NAMES[e.label] || e.label).toLowerCase().includes(q) ||
+    e.value.toLowerCase().includes(q));
+  $("vaultCount").textContent =
+    `${rows.length} of ${VAULT_ENTITIES.length} entit${VAULT_ENTITIES.length === 1 ? "y" : "ies"} shown`;
+
+  for (const e of rows) {
+    const tr = document.createElement("tr");
+
+    const tdAlias = document.createElement("td");
+    tdAlias.textContent = e.placeholder;
+    tdAlias.className = "sent-map-field";
+    const tdType = document.createElement("td");
+    tdType.textContent = FIELD_NAMES[e.label] || e.label;
+    const tdVal = document.createElement("td");
+    tdVal.textContent = e.value;
+    const tdInc = document.createElement("td");
+    const incBtn = document.createElement("button");
+    incBtn.className = "btn btn-secondary";
+    incBtn.style.cssText = "padding: 2px 10px; font-size: 12px;";
+    incBtn.textContent = `×${e.incident_count}`;
+    incBtn.title = "Show the incidents this entity appeared in";
+    tdInc.appendChild(incBtn);
+    const tdFirst = document.createElement("td");
+    tdFirst.textContent = (e.first_seen || "").slice(0, 10);
+    const tdLast = document.createElement("td");
+    tdLast.textContent = (e.last_seen || "").slice(0, 10);
+    const tdDel = document.createElement("td");
+    const del = document.createElement("button");
+    del.className = "btn btn-danger-ghost";
+    del.style.cssText = "padding: 2px 8px; font-size: 12px;";
+    del.textContent = "✕";
+    del.title = "Forget this entity — its number is retired, never reused";
+    tdDel.appendChild(del);
+    tr.append(tdAlias, tdType, tdVal, tdInc, tdFirst, tdLast, tdDel);
+    body.appendChild(tr);
+
+    // Expandable incident history under the row.
+    const detail = document.createElement("tr");
+    detail.className = "hidden";
+    const dtd = document.createElement("td");
+    dtd.colSpan = 7;
+    dtd.innerHTML = (e.incidents || []).map((i) =>
+      `<div class="vault-inc">${escapeHtml(i.time || "unknown time")} — ` +
+      `${verdictBadge(i.verdict)}` +
+      `${i.severity ? " · " + escapeHtml(i.severity) : ""} ` +
+      `<span class="hint">(conversation ${escapeHtml(i.id)})</span></div>`
+    ).join("") || `<span class="hint">No incident records.</span>`;
+    detail.appendChild(dtd);
+    body.appendChild(detail);
+
+    incBtn.addEventListener("click", () => detail.classList.toggle("hidden"));
+    del.addEventListener("click", async () => {
+      const r = await fetch("/vault/forget", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ placeholder: e.placeholder }),
+      });
+      if (r.ok) loadVault();
+      else vaultMsg("Could not forget the entity.", "err");
+    });
+  }
+}
+
+async function loadVault() {
+  try {
+    const r = await fetch("/vault");
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Could not load the vault");
+    VAULT_ENTITIES = d.entities || [];
+    $("vaultEnabledChk").checked = d.enabled && d.available;
+    $("vaultEnabledChk").disabled = !d.available;
+    $("vaultFile").textContent = (d.file || "entity_vault.enc").split("/").pop();
+    const active = d.enabled && d.available;
+    syncVaultCtxToggle(active, d.available ? "The entity vault is switched off." : d.reason);
+    if (!d.available) vaultMsg(d.reason, "err");
+    else if (d.warning) vaultMsg(d.warning, "err");
+    else if (!d.enabled) vaultMsg("The vault is switched off — placeholders restart at ×_1 for every conversation and nothing new is remembered.", "");
+    else vaultMsg(`${d.stats.entities} entit${d.stats.entities === 1 ? "y" : "ies"} across ${d.stats.incidents} incident(s).`, "ok");
+    renderVault();
+  } catch (e) {
+    vaultMsg(e.message, "err");
+  }
+}
+
+$("vaultSearch").addEventListener("input", renderVault);
+$("vaultRefreshBtn").addEventListener("click", loadVault);
+$("vaultEnabledChk").addEventListener("change", async (e) => {
+  await fetch("/vault/enabled", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: e.target.checked }),
+  });
+  await loadVault();
+  refreshPromptPreview();
+});
+$("vaultClearBtn").addEventListener("click", async () => {
+  if (!confirm("Clear the entity vault?\n\nEvery remembered entity and its incident history is deleted; " +
+               "future logs start numbering from [TYPE_1] again. This cannot be undone.")) return;
+  await fetch("/vault/clear", { method: "POST" });
+  await loadVault();
+  refreshPromptPreview();
+});
+
 // --- Requests tab: audit log of everything sent to the AI ----------------
 function reqBlock(title, html) {
   return `<div class="req-block"><div class="req-block-title">${title}</div>` +
@@ -1758,6 +1901,7 @@ async function persistConfig(over = {}) {
     provider: over.provider || CONFIG.provider,
     make_default: !!over.make_default,
     provider_models: { ...(CONFIG.provider_models || {}), ...(over.provider_models || {}) },
+    ollama_endpoint: over.ollama_endpoint ?? CONFIG.ollama_endpoint ?? "",
     azure_endpoint: over.azure_endpoint ?? CONFIG.azure_endpoint ?? "",
     azure_deployment: over.azure_deployment ?? CONFIG.azure_deployment ?? "",
     azure_api_version: over.azure_api_version ?? CONFIG.azure_api_version ?? "2024-08-01-preview",
@@ -1829,6 +1973,8 @@ function updateConnectionBadge() {
     status = "No provider set up — open Settings to configure";
   } else if (ready) {
     status = `${meta.label} · ${modelFor(CONFIG.provider) || "ready"}`;
+  } else if (meta.auth === "none") {
+    status = `${meta.label} · not reachable — is it running?`;
   } else {
     status = `${meta.label} · add API key`;
   }
@@ -1861,7 +2007,8 @@ function renderActiveProvider() {
   for (const pid of available) {
     const o = document.createElement("option");
     o.value = pid;
-    o.textContent = REGISTRY[pid].label + (CONFIGURED[pid] ? "" : " (no key)");
+    o.textContent = REGISTRY[pid].label +
+      (CONFIGURED[pid] ? "" : REGISTRY[pid].auth === "none" ? " (offline)" : " (no key)");
     pSel.appendChild(o);
   }
   pSel.value = CONFIG.provider;
@@ -1906,6 +2053,10 @@ async function loadConfig() {
   CONFIGURED = d.configured;
   selectedProvider = CONFIG.provider;
   renderActiveProvider();
+  // A local default provider lists its models live (no key to gate on).
+  if ((REGISTRY[CONFIG.provider] || {}).auth === "none" && !LIVE_MODELS[CONFIG.provider]) {
+    refreshModels(CONFIG.provider);
+  }
 }
 
 // Render provider chooser cards inside the modal.
@@ -1918,11 +2069,15 @@ function renderProviderCards() {
     card.className = "provider-card" + (pid === selectedProvider ? " selected" : "");
     card.dataset.pid = pid;
     const isDefault = pid === CONFIG.provider;
+    const state = CONFIGURED[pid]
+      ? (meta.auth === "none" ? "✓ reachable"
+         : meta.auth === "oauth" ? "✓ signed in" : "✓ key saved")
+      : (meta.auth === "none" ? "offline"
+         : meta.auth === "oauth" ? "not signed in" : "no key");
     card.innerHTML =
       `<span class="pc-label">${meta.label}` +
       (isDefault ? ` <span class="pc-default">★ default</span>` : "") + `</span>` +
-      `<span class="pc-state ${CONFIGURED[pid] ? "ok" : "warn"}">` +
-      `${CONFIGURED[pid] ? "✓ key saved" : "no key"}</span>`;
+      `<span class="pc-state ${CONFIGURED[pid] ? "ok" : "warn"}">${state}</span>`;
     card.addEventListener("click", () => { selectedProvider = pid; renderModalForProvider(); });
     wrap.appendChild(card);
   }
@@ -1941,8 +2096,11 @@ function renderModalForProvider() {
   const custom = $("modelCustom");
   custom.classList.add("hidden");
   sel.innerHTML = "";
+  const isLocal = meta.auth === "none";
   const hasModels = meta.models.length || (LIVE_MODELS[selectedProvider] || []).length;
-  if (hasModels) {
+  if (hasModels || isLocal) {
+    // A local provider has no built-in list — its models are whatever the
+    // local instance has pulled, fetched live below.
     for (const m of modelOptionsFor(selectedProvider)) {
       const o = document.createElement("option");
       o.value = m; o.textContent = m;
@@ -1953,8 +2111,9 @@ function renderModalForProvider() {
     sel.appendChild(co);
     sel.disabled = false;
     sel.value = modelFor(selectedProvider);
-    // Auto-fetch the live list once per provider if a key is configured.
-    if (CONFIGURED[selectedProvider] && !LIVE_MODELS[selectedProvider]) {
+    // Auto-fetch the live list once per provider if a key is configured
+    // (a local provider needs no key — always try).
+    if ((CONFIGURED[selectedProvider] || isLocal) && !LIVE_MODELS[selectedProvider]) {
       refreshModels(selectedProvider);
     }
   } else {
@@ -1989,17 +2148,17 @@ function renderModalForProvider() {
     ex.appendChild(wrap);
   }
 
-  // Toggle API-key vs OAuth (Microsoft 365 Copilot) panels.
+  // Toggle API-key vs OAuth (M365) vs keyless-local (Ollama) panels.
   const isOauth = meta.auth === "oauth";
-  $("keySection").classList.toggle("hidden", isOauth);
+  $("keySection").classList.toggle("hidden", isOauth || isLocal);
   $("oauthSection").classList.toggle("hidden", !isOauth);
-  $("deleteKeyBtn").style.display = isOauth ? "none" : "";
+  $("deleteKeyBtn").style.display = (isOauth || isLocal) ? "none" : "";
   // M365 Copilot has no model selection; hide the Model field for it.
   $("modelField").style.display = isOauth ? "none" : "";
 
   if (isOauth) {
     refreshM365();
-  } else {
+  } else if (!isLocal) {
     $("keyLabel").textContent = meta.key_label;
     $("apiKey").placeholder = meta.key_url ? "paste key — get one at " + meta.key_url : "…";
     $("apiKey").value = "";
@@ -2206,5 +2365,7 @@ $("signOutBtn").addEventListener("click", async () => {
   renderActiveProvider();
 });
 
-// Load provider config on startup.
+// Load provider config on startup; the vault state drives the workspace's
+// cross-incident-context toggle.
 loadConfig();
+loadVault();

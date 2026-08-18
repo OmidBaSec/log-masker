@@ -17,6 +17,11 @@ from typing import Dict, List, Optional
 REQUEST_TIMEOUT = 120
 MAX_TOKENS = 4096
 
+# Local inference on modest hardware is much slower than a cloud API — give a
+# local model plenty of time before declaring the request dead.
+LOCAL_TIMEOUT = 600
+OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
+
 
 # ---------------------------------------------------------------------------
 # Provider registry. `extra_fields` are non-secret settings the setup page must
@@ -69,6 +74,23 @@ PROVIDERS: Dict[str, dict] = {
                  "ID app registration. You sign in with Microsoft — no API key. "
                  "Answers are grounded in your tenant data."),
     },
+    "ollama": {
+        "label": "Local model (Ollama)",
+        "models": [],           # live from the Ollama instance's /api/tags
+        "default_model": "",
+        "auth": "none",         # runs locally — no API key, no sign-in
+        "key_label": "",
+        "key_url": "https://ollama.com/download",
+        "extra_fields": [
+            {"key": "ollama_endpoint", "label": "Endpoint",
+             "placeholder": OLLAMA_DEFAULT_ENDPOINT, "required": False},
+        ],
+        "note": ("Runs entirely on this machine via Ollama — for restricted "
+                 "logs that must not reach any cloud provider, even masked. "
+                 "Install Ollama, pull a model (e.g. `ollama pull llama3.1`), "
+                 "and it appears in the model list. No API key; the endpoint "
+                 "defaults to " + OLLAMA_DEFAULT_ENDPOINT + "."),
+    },
     "azure": {
         "label": "Microsoft Copilot (Azure OpenAI)",
         "models": [],  # the deployment name acts as the model; user supplies it
@@ -95,9 +117,10 @@ class ProviderError(Exception):
     """Raised for configuration or upstream API errors."""
 
 
-def _post(url: str, headers: dict, payload: dict) -> dict:
+def _post(url: str, headers: dict, payload: dict,
+          timeout: int = REQUEST_TIMEOUT) -> dict:
     resp = requests.post(url, headers=headers, data=json.dumps(payload),
-                         timeout=REQUEST_TIMEOUT)
+                         timeout=timeout)
     if resp.status_code != 200:
         raise ProviderError(f"API error {resp.status_code}: {resp.text[:500]}")
     return resp.json()
@@ -164,11 +187,37 @@ def _call_azure(api_key, model, system, messages, cfg) -> str:
     return data["choices"][0]["message"]["content"].strip()
 
 
+def _ollama_endpoint(cfg) -> str:
+    return ((cfg or {}).get("ollama_endpoint")
+            or OLLAMA_DEFAULT_ENDPOINT).rstrip("/")
+
+
+def _call_ollama(api_key, model, system, messages, cfg) -> str:
+    """Local inference via Ollama's native chat API. No key: the model runs on
+    this machine, so even the masked text never leaves it."""
+    if not model:
+        raise ProviderError("Choose a local model first (e.g. llama3.1 — "
+                            "pull one with `ollama pull llama3.1`).")
+    endpoint = _ollama_endpoint(cfg)
+    msgs = ([{"role": "system", "content": system}] if system else []) + messages
+    try:
+        data = _post(f"{endpoint}/api/chat",
+                     {"content-type": "application/json"},
+                     {"model": model, "messages": msgs, "stream": False,
+                      "options": {"num_predict": MAX_TOKENS}},
+                     timeout=LOCAL_TIMEOUT)
+    except requests.exceptions.ConnectionError:
+        raise ProviderError(f"Could not reach Ollama at {endpoint} — is it "
+                            f"running? (`ollama serve`, or open the Ollama app)")
+    return (data.get("message") or {}).get("content", "").strip()
+
+
 _CALLERS = {
     "anthropic": _call_anthropic,
     "openai": _call_openai,
     "google": _call_google,
     "azure": _call_azure,
+    "ollama": _call_ollama,
 }
 
 
@@ -181,9 +230,27 @@ def call(provider: str, api_key: str, model: str, system: str,
         messages = [{"role": "user", "content": messages}]
     if provider not in _CALLERS:
         raise ProviderError(f"Unknown provider: {provider}")
-    if not api_key:
+    if not api_key and needs_key(provider):
         raise ProviderError("No API key configured for this provider.")
     return _CALLERS[provider](api_key, model, system, messages, cfg or {})
+
+
+def needs_key(provider: str) -> bool:
+    """False for providers that authenticate some other way (OAuth) or not at
+    all (a local model)."""
+    return PROVIDERS.get(provider, {}).get("auth", "apikey") == "apikey"
+
+
+def reachable(provider: str, cfg: Optional[dict] = None) -> bool:
+    """Quick liveness probe for local/keyless providers, used for the setup
+    page's status dot. Short timeout: a local endpoint answers instantly."""
+    if provider != "ollama":
+        return False
+    try:
+        r = requests.get(f"{_ollama_endpoint(cfg)}/api/version", timeout=2)
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +273,16 @@ def _get(url: str, headers: dict = None) -> dict:
 
 def list_models(provider: str, api_key: str, cfg: Optional[dict] = None) -> List[str]:
     """Return chat/text model IDs currently available for `provider`'s key."""
+    if provider == "ollama":
+        endpoint = _ollama_endpoint(cfg)
+        try:
+            data = _get(f"{endpoint}/api/tags")
+        except requests.exceptions.ConnectionError:
+            raise ProviderError(f"Could not reach Ollama at {endpoint} — is it "
+                                f"running? (`ollama serve`)")
+        return sorted(m.get("name", "") for m in data.get("models", [])
+                      if m.get("name"))
+
     if provider == "anthropic":
         data = _get("https://api.anthropic.com/v1/models",
                     {"x-api-key": api_key, "anthropic-version": "2023-06-01"})
