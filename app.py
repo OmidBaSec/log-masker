@@ -40,6 +40,8 @@ import verdict as verdict_mod
 import leakguard
 import store
 import vault
+import pricing
+import usage
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -225,6 +227,12 @@ class VaultEnabledRequest(BaseModel):
 
 class VaultForgetRequest(BaseModel):
     placeholder: str
+
+
+class RateRequest(BaseModel):
+    model: str
+    input_per_m: float
+    output_per_m: float
 
 
 class TestRequest(BaseModel):
@@ -830,7 +838,8 @@ _REQUEST_SEQ = {"n": 0}
 def _log_request(kind: str, provider: str, model: str, system: str,
                  messages: list, response: str, error: str,
                  duration_ms: int, conversation_id: Optional[str],
-                 leak_info: Optional[dict] = None) -> None:
+                 leak_info: Optional[dict] = None,
+                 token_usage: Optional[dict] = None) -> None:
     _REQUEST_SEQ["n"] += 1
     entry = {
         "seq": _REQUEST_SEQ["n"],
@@ -846,6 +855,10 @@ def _log_request(kind: str, provider: str, model: str, system: str,
         "ok": not error,
         "duration_ms": duration_ms,
     }
+    if token_usage:
+        # Token counts as billed by the provider. The credit view prefers
+        # these over its own character-based estimate.
+        entry["usage"] = token_usage
     if leak_info:
         # Leak-guard findings the analyst acknowledged before this was sent —
         # part of the audit trail by design.
@@ -893,6 +906,7 @@ def _call_provider_chat(cfg: dict, provider: str, model: str,
     Every attempt — success or failure — is recorded in REQUEST_LOG."""
     start = time.time()
     response, error = "", ""
+    token_usage = {}
     try:
         if provider == "m365copilot":
             # The Copilot Chat API takes a single prompt; flatten the history.
@@ -914,7 +928,7 @@ def _call_provider_chat(cfg: dict, provider: str, model: str,
                 400, f"No API key configured for {label}. Open Setup to add one.")
         try:
             response = providers.call(provider, api_key or "", model, system,
-                                      messages, cfg)
+                                      messages, cfg, usage_out=token_usage)
         except providers.ProviderError as e:
             raise HTTPException(502, str(e))
         return response
@@ -924,7 +938,7 @@ def _call_provider_chat(cfg: dict, provider: str, model: str,
     finally:
         _log_request(kind, provider, model, system, messages, response, error,
                      int((time.time() - start) * 1000), conversation_id,
-                     leak_info)
+                     leak_info, token_usage or None)
 
 
 def _shape_response(masked_response: str, mapping: dict, structured: bool) -> dict:
@@ -954,6 +968,71 @@ def clear_requests():
     and is deliberately never deleted by the app."""
     REQUEST_LOG.clear()
     return {"ok": True, "file": AI_REQUESTS_FILE}
+
+
+# ---------------------------------------------------------------------------
+# Credit / spend dashboard
+# ---------------------------------------------------------------------------
+# Worth being explicit about what this can and cannot know: no provider we
+# support exposes a remaining-balance endpoint to a normal API key, so there is
+# nothing to fetch. What the app *can* do is price its own traffic — every call
+# it makes is already in the audit log, with the provider's own token counts
+# since usage capture landed. Requests made from anywhere else on the same key
+# are invisible here, hence the "check balance" link on every card.
+_EMPTY_TOTALS = {"requests": 0, "input_tokens": 0, "output_tokens": 0,
+                 "cost": 0.0, "estimated_requests": 0, "unpriced": []}
+
+
+def _cost_model(provider: str) -> str:
+    if not providers.needs_key(provider):
+        return "free" if provider == "ollama" else "licensed"
+    if provider == "m365copilot":
+        return "licensed"
+    return "metered"
+
+
+def _credits_payload() -> dict:
+    cfg = load_config()
+    data = usage.summary()
+    registry = providers.public_registry()
+    out = []
+    for pid, meta in registry.items():
+        stats = data["providers"].get(pid) or {}
+        out.append({
+            "provider": pid,
+            "label": meta["label"],
+            "billing_url": meta.get("billing_url", ""),
+            "cost_model": _cost_model(pid),
+            "model": resolve_model(cfg, pid),
+            "month": stats.get("month") or _EMPTY_TOTALS,
+            "all_time": stats.get("all_time") or _EMPTY_TOTALS,
+        })
+    return {
+        "currency": data["currency"],
+        "month": data["month"],
+        "active_provider": cfg.get("provider", ""),
+        "providers": out,
+        "rates": pricing.table(),
+        "log_file": data["log_file"],
+    }
+
+
+@app.get("/credits")
+def get_credits():
+    """Spend per provider, and what is left of the credit entered for it."""
+    return _credits_payload()
+
+
+@app.post("/credits/rate")
+def set_credit_rate(req: RateRequest):
+    """Pin the USD-per-1M-token rate for a model. Needed for Azure deployments
+    and any model whose family we do not recognise; also the way to correct a
+    seeded list price that no longer matches your bill."""
+    try:
+        pricing.set_rate(req.model, req.input_per_m, req.output_per_m)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _credits_payload()
 
 
 @app.post("/analyze")
@@ -1036,6 +1115,8 @@ def analyze(req: AnalyzeRequest):
         "vault": {"enabled": vault_on,        # cross-incident context attached
                   "recurring": len(vault_lines),
                   "context": vault_lines},
+        # What this conversation has cost so far (this one call, for now).
+        "cost": usage.conversation(conv_id),
         **shaped,                             # restored prose + verdict
     }
 
@@ -1115,15 +1196,20 @@ def chat_followup(req: FollowUpRequest):
         "masked_question": masked_q,
         "mapping": used,
         "masked_count": len(used),
+        # Running total for the conversation: the opening analysis plus every
+        # follow-up so far, this one included.
+        "cost": usage.conversation(req.conversation_id),
         **shaped,                             # restored prose + (updated) verdict
     }
 
 
 @app.post("/chat/end")
 def chat_end(req: EndConversationRequest):
-    """Forget a conversation (history + mapping), freeing the UI for a new log."""
+    """Forget a conversation (history + mapping), freeing the UI for a new log.
+    Returns its final cost: everything billed under this conversation id from
+    the opening analysis to this moment."""
     CONVERSATIONS.pop(req.conversation_id, None)
-    return {"ok": True}
+    return {"ok": True, "cost": usage.conversation(req.conversation_id)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

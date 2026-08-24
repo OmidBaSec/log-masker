@@ -494,7 +494,7 @@ function fileMaskNotice(count) {
     `<b>${count}</b> value(s) were masked. ` +
     `Click <b>⬇ Download masked</b> above to get the masked file in its ` +
     `original format, or <b>🔴 red review</b> for a coloured copy with masked ` +
-    `fields in <span style="color:#ff6b6b">red</span>.</div>` +
+    `fields in <span style="color:var(--danger)">red</span>.</div>` +
     `</div>`
   );
 }
@@ -1382,6 +1382,40 @@ const CONV = { id: null, model: "" };
 
 function chatClear() {
   $("chat").innerHTML = "";
+  renderConvCost(null);
+}
+
+// What this conversation has cost so far — the opening analysis plus every
+// follow-up, as billed under its conversation id. Shown live next to
+// "End conversation" and summed up in the closing message.
+function convCostText(cost) {
+  const tokens = compactTokens(cost.input_tokens + cost.output_tokens);
+  const calls = `${cost.requests} call(s)`;
+  // A model with no rate is counted in tokens but never costed at a
+  // confident $0.00 — say so instead.
+  if (cost.unpriced && cost.unpriced.length) {
+    return { short: `${tokens} tokens · ${calls}`, priced: false, tokens, calls };
+  }
+  return { short: `${money(cost.cost)} · ${calls}`, priced: true, tokens, calls };
+}
+
+function renderConvCost(cost) {
+  const el = $("convCost");
+  if (!el) return;
+  if (!cost || !cost.requests) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  const t = convCostText(cost);
+  el.classList.remove("hidden");
+  el.textContent = t.short;
+  el.title =
+    `This conversation: ${t.calls}, ${t.tokens} tokens, ${cost.models.join(", ")}.` +
+    (t.priced ? "" : ` No rate is set for ${cost.unpriced.join(", ")}, so it is not costed.`) +
+    (cost.estimated_requests
+      ? ` ${cost.estimated_requests} call(s) predate token capture — those tokens are estimated.`
+      : "");
 }
 
 // role: "user" | "ai" | "sys". `html` is already-safe HTML.
@@ -1482,6 +1516,7 @@ async function doAnalyze(acknowledgeLeaks = false) {
     const aiBubble = addBubble("ai", aiAnswerHtml(d), `AI · ${d.model}`);
     if (d.verdict) { lastVerdict = d.verdict; wireVerdictButtons(aiBubble, d.verdict); }
     setConvActive(true);
+    renderConvCost(d.cost);
     renderTranscript(d.transcript);
     setMaskedArtifact(d.masked_sent);
     renderSentWarnings(d.warnings);
@@ -1497,6 +1532,7 @@ async function doAnalyze(acknowledgeLeaks = false) {
     setStatus(e.message, "err");
   } finally {
     setAnalyzing(false);
+    loadCredits();               // that call just cost something — re-count
     if (!CONV.id) btn.disabled = false;
   }
 }
@@ -1532,6 +1568,7 @@ async function sendFollowUp(forcedQ = null, acknowledgeLeaks = false) {
     }
     thinking.querySelector(".markdown").innerHTML = aiAnswerHtml(d);
     if (d.verdict) { lastVerdict = d.verdict; wireVerdictButtons(thinking, d.verdict); }
+    renderConvCost(d.cost);
     renderTranscript(d.transcript);
     fillSentMapping(d.mapping);
     $("redBadge").textContent =
@@ -1547,6 +1584,7 @@ async function sendFollowUp(forcedQ = null, acknowledgeLeaks = false) {
     }
   } finally {
     $("sendFollowUp").disabled = false;
+    loadCredits();
     $("chat").scrollTop = $("chat").scrollHeight;
     $("followUp").focus();
   }
@@ -1605,18 +1643,31 @@ $("followUp").addEventListener("keydown", (e) => {
 });
 
 $("endConvBtn").addEventListener("click", async () => {
+  let cost = null;
   if (CONV.id) {
-    await fetch("/chat/end", {
+    const r = await fetch("/chat/end", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: CONV.id }),
     });
+    if (r.ok) cost = (await r.json()).cost;
   }
   CONV.id = null;
+  let total = "";
+  if (cost && cost.requests) {
+    const t = convCostText(cost);
+    total = t.priced
+      ? `<br>💵 This conversation cost <strong>${money(cost.cost)}</strong> — ` +
+        `${t.calls}, ${t.tokens} tokens on ${escapeHtml(cost.models.join(", "))}.`
+      : `<br>💵 This conversation used <strong>${t.tokens} tokens</strong> over ${t.calls} ` +
+        `on ${escapeHtml(cost.models.join(", "))} — no rate is set for ` +
+        `${escapeHtml(cost.unpriced.join(", "))}, so it is not costed.`;
+  }
   addBubble("sys",
     "Conversation ended — the AI-side history and the local mapping were discarded. " +
-    "Paste a new raw log and Mask &amp; Analyse to start a new one.");
+    "Paste a new raw log and Mask &amp; Analyse to start a new one." + total);
   setConvActive(false);
+  renderConvCost(null);
   $("redBadge").textContent = "Conversation ended. Ready for a new log.";
   $("redBadge").className = "redaction-badge";
   setStatus("Conversation ended.", "ok");
@@ -2036,6 +2087,7 @@ $("activeProviderSelect").addEventListener("change", async (e) => {
   const pid = e.target.value;
   await persistConfig({ provider: pid, make_default: true });
   renderActiveProvider();
+  loadCredits();                 // the "active" card moves with the provider
   setStatus(`Default provider is now ${REGISTRY[pid].label}.`, "ok");
 });
 
@@ -2053,6 +2105,7 @@ async function loadConfig() {
   CONFIGURED = d.configured;
   selectedProvider = CONFIG.provider;
   renderActiveProvider();
+  renderCredits();               // provider set-up changes which cards show
   // A local default provider lists its models live (no key to gate on).
   if ((REGISTRY[CONFIG.provider] || {}).auth === "none" && !LIVE_MODELS[CONFIG.provider]) {
     refreshModels(CONFIG.provider);
@@ -2369,3 +2422,237 @@ $("signOutBtn").addEventListener("click", async () => {
 // cross-incident-context toggle.
 loadConfig();
 loadVault();
+
+// --- Theme: light / dark / follow the OS ---------------------------------
+// The preference is stored as "light" or "dark"; no stored value means "follow
+// the system appearance", which is also the first-run default. The inline
+// script in index.html applies the same rule before first paint.
+const THEME_KEY = "logmasker.theme";
+const SYSTEM_LIGHT = window.matchMedia("(prefers-color-scheme: light)");
+
+function themePref() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved === "light" || saved === "dark" ? saved : "system";
+  } catch (e) {
+    return "system";
+  }
+}
+
+function applyTheme(pref) {
+  const resolved =
+    pref === "system" ? (SYSTEM_LIGHT.matches ? "light" : "dark") : pref;
+  document.documentElement.setAttribute("data-theme", resolved);
+  document.querySelectorAll(".theme-opt").forEach((btn) => {
+    const on = btn.dataset.themePref === pref;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+  });
+}
+
+document.querySelectorAll(".theme-opt").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const pref = btn.dataset.themePref;
+    try {
+      if (pref === "system") localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, pref);
+    } catch (e) { /* non-fatal: the choice just won't survive a reload */ }
+    applyTheme(pref);
+  });
+});
+
+// Repaint live when macOS flips between light and dark — but only while the
+// user is actually following the system.
+SYSTEM_LIGHT.addEventListener("change", () => {
+  if (themePref() === "system") applyTheme("system");
+});
+
+applyTheme(themePref());
+
+// --- API credit / spend dashboard ----------------------------------------
+// No provider we talk to will tell an API key what its balance is, so this
+// works from the other end: the backend prices the app's own audit log and
+// subtracts it from the credit you say you topped up. Every card links to the
+// provider's billing page, which is the only authoritative number.
+let CREDITS = null;
+
+function money(n) {
+  if (n === null || n === undefined) return "—";
+  const abs = Math.abs(n);
+  if (abs >= 1000) return "$" + n.toFixed(0);
+  // Sub-cent totals are normal for a few cheap calls — show enough digits
+  // that they don't all read as $0.00.
+  if (abs > 0 && abs < 0.01) return "$" + n.toFixed(4);
+  return "$" + n.toFixed(2);
+}
+
+function compactTokens(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
+  return String(n);
+}
+
+async function loadCredits() {
+  try {
+    const r = await fetch("/credits");
+    if (!r.ok) return;
+    CREDITS = await r.json();
+    renderCredits();
+  } catch (e) {
+    // The dashboard is informational — never let it break the workspace.
+  }
+}
+
+async function postCredits(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "Could not save that.");
+  CREDITS = d;
+  renderCredits();
+}
+
+// Show a provider once it is worth showing: set up, used at some point, or
+// the one currently selected. Keeps the strip short on a fresh install.
+// Local inference has nothing to spend, so it never earns a card here.
+function creditRelevant(p) {
+  if (p.cost_model === "free") return false;
+  return (
+    p.all_time.requests > 0 ||
+    !!CONFIGURED[p.provider] ||
+    p.provider === CREDITS.active_provider
+  );
+}
+
+function creditCard(p) {
+  const card = document.createElement("article");
+  card.className = "credit-card" + (p.provider === CREDITS.active_provider ? " active" : "");
+
+  const head = document.createElement("div");
+  head.className = "credit-card-head";
+  const name = document.createElement("span");
+  name.className = "credit-name";
+  name.textContent = p.label;
+  head.appendChild(name);
+  if (p.billing_url) {
+    const link = document.createElement("a");
+    link.className = "credit-link";
+    link.href = p.billing_url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "balance ↗";
+    link.title = "Open " + p.label + "'s billing page — the authoritative balance";
+    head.appendChild(link);
+  }
+  card.appendChild(head);
+
+  // Providers that are not billed per token say so and stop there.
+  if (p.cost_model !== "metered") {
+    const fig = document.createElement("div");
+    fig.className = "credit-figure muted";
+    fig.textContent = p.cost_model === "free" ? "Runs locally — free" : "Per-seat licence";
+    card.appendChild(fig);
+    const meta = document.createElement("div");
+    meta.className = "credit-meta";
+    meta.textContent =
+      p.cost_model === "free"
+        ? `${p.all_time.requests} call(s) · no API charge`
+        : `${p.all_time.requests} call(s) · no per-token charge`;
+    card.appendChild(meta);
+    return card;
+  }
+
+  const fig = document.createElement("div");
+  fig.className = "credit-figure";
+  fig.textContent = money(p.month.cost);
+  const sub = document.createElement("small");
+  sub.textContent = "spent this month";
+  fig.appendChild(sub);
+  card.appendChild(fig);
+
+  const meta = document.createElement("div");
+  meta.className = "credit-meta";
+  const tokens = p.month.input_tokens + p.month.output_tokens;
+  meta.textContent =
+    `${p.month.requests} call(s) · ${compactTokens(tokens)} tokens this month` +
+    (p.all_time.cost > p.month.cost ? ` · ${money(p.all_time.cost)} all-time` : "");
+  card.appendChild(meta);
+
+  // Only rendered when there is something to say: a missing rate, or tokens
+  // we had to estimate.
+  const actions = document.createElement("div");
+  actions.className = "credit-actions";
+
+  // A model we have no rate for is counted in tokens but priced at zero —
+  // say so rather than showing a confidently wrong $0.00.
+  const unpriced = p.all_time.unpriced || [];
+  if (unpriced.length) {
+    const flag = document.createElement("button");
+    flag.className = "credit-flag credit-btn";
+    flag.type = "button";
+    flag.textContent = `set rate: ${unpriced[0]}`;
+    flag.title = `No price is known for ${unpriced.join(", ")}, so its tokens are counted but not costed.`;
+    flag.addEventListener("click", () => editRate(unpriced[0]));
+    actions.appendChild(flag);
+  } else if (p.month.estimated_requests) {
+    const flag = document.createElement("span");
+    flag.className = "credit-flag";
+    flag.textContent = "estimated";
+    flag.title =
+      `${p.month.estimated_requests} of this month's call(s) predate token capture, ` +
+      "so their tokens are estimated from character counts.";
+    actions.appendChild(flag);
+  }
+  if (actions.childElementCount) card.appendChild(actions);
+  return card;
+}
+
+// Rates are USD per 1M tokens. Needed for Azure deployments (whose name says
+// nothing about the price) and for any model family we don't recognise.
+async function editRate(model) {
+  const answer = window.prompt(
+    `Price for "${model}" in USD per 1M tokens, as input/output.\n` +
+      "Check your provider's pricing page — e.g. 3/15",
+    ""
+  );
+  if (answer === null) return;
+  const parts = answer.split(/[\/,\s]+/).filter(Boolean).map(Number);
+  if (parts.length !== 2 || parts.some((n) => !isFinite(n) || n < 0)) {
+    return setStatus("Enter two non-negative numbers, e.g. 3/15.", "err");
+  }
+  try {
+    await postCredits("/credits/rate", {
+      model,
+      input_per_m: parts[0],
+      output_per_m: parts[1],
+    });
+    setStatus(`Rate saved for ${model} — history re-priced.`, "ok");
+  } catch (e) {
+    setStatus(e.message, "err");
+  }
+}
+
+function renderCredits() {
+  if (!CREDITS) return;
+  const wrap = $("creditCards");
+  wrap.innerHTML = "";
+  const shown = CREDITS.providers.filter(creditRelevant);
+  for (const p of shown) wrap.appendChild(creditCard(p));
+  if (!shown.length) {
+    const empty = document.createElement("p");
+    empty.className = "credit-meta";
+    empty.textContent = "No provider set up yet — add a key in ⚙ Settings.";
+    wrap.appendChild(empty);
+  }
+}
+
+$("creditRefresh").addEventListener("click", async (e) => {
+  e.currentTarget.classList.add("busy");
+  await loadCredits();
+  e.currentTarget.classList.remove("busy");
+});
+
+loadCredits();

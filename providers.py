@@ -34,6 +34,7 @@ PROVIDERS: Dict[str, dict] = {
         "default_model": "claude-opus-4-8",
         "key_label": "Anthropic API key",
         "key_url": "https://console.anthropic.com/settings/keys",
+        "billing_url": "https://console.anthropic.com/settings/billing",
         "extra_fields": [],
     },
     "openai": {
@@ -43,6 +44,7 @@ PROVIDERS: Dict[str, dict] = {
         "default_model": "gpt-5.5",
         "key_label": "OpenAI API key",
         "key_url": "https://platform.openai.com/api-keys",
+        "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
         "extra_fields": [],
     },
     "google": {
@@ -52,6 +54,7 @@ PROVIDERS: Dict[str, dict] = {
         "default_model": "gemini-3.5-flash",
         "key_label": "Google AI Studio API key",
         "key_url": "https://aistudio.google.com/app/apikey",
+        "billing_url": "https://aistudio.google.com/app/plan_information",
         "extra_fields": [],
     },
     "m365copilot": {
@@ -61,6 +64,7 @@ PROVIDERS: Dict[str, dict] = {
         "auth": "oauth",        # sign-in flow, not an API key
         "key_label": "",
         "key_url": "https://entra.microsoft.com/",
+        "billing_url": "https://admin.microsoft.com/Adminportal/Home#/subscriptions",
         "extra_fields": [
             {"key": "m365_tenant_id", "label": "Directory (tenant) ID",
              "placeholder": "00000000-0000-0000-0000-000000000000",
@@ -97,6 +101,7 @@ PROVIDERS: Dict[str, dict] = {
         "default_model": "",
         "key_label": "Azure OpenAI API key",
         "key_url": "https://portal.azure.com/",
+        "billing_url": "https://portal.azure.com/#view/Microsoft_Azure_GTM/ModernBillingMenuBlade",
         "extra_fields": [
             {"key": "azure_endpoint", "label": "Endpoint",
              "placeholder": "https://my-resource.openai.azure.com",
@@ -126,8 +131,23 @@ def _post(url: str, headers: dict, payload: dict,
     return resp.json()
 
 
+def _usage(input_tokens, output_tokens) -> Optional[dict]:
+    """Normalise a provider's usage block. None when it reported nothing, so
+    callers can tell "no data" apart from a genuine zero."""
+    if input_tokens is None and output_tokens is None:
+        return None
+    try:
+        return {"input_tokens": int(input_tokens or 0),
+                "output_tokens": int(output_tokens or 0),
+                "source": "provider"}
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
-# Per-provider callers. Each returns the response text.
+# Per-provider callers. Each returns (response text, usage or None). Usage is
+# what the provider itself billed for — the credit dashboard prefers it over
+# character-based estimates.
 # ---------------------------------------------------------------------------
 # Each caller receives `messages`: a list of {"role": "user"|"assistant",
 # "content": str} covering the whole (masked) conversation so far, so models
@@ -140,8 +160,10 @@ def _call_anthropic(api_key, model, system, messages, cfg) -> str:
         {"model": model, "max_tokens": MAX_TOKENS, "system": system,
          "messages": messages},
     )
-    return "".join(b.get("text", "") for b in data.get("content", [])
-                   if b.get("type") == "text").strip()
+    u = data.get("usage") or {}
+    return ("".join(b.get("text", "") for b in data.get("content", [])
+                    if b.get("type") == "text").strip(),
+            _usage(u.get("input_tokens"), u.get("output_tokens")))
 
 
 def _call_openai(api_key, model, system, messages, cfg) -> str:
@@ -152,7 +174,14 @@ def _call_openai(api_key, model, system, messages, cfg) -> str:
         {"model": model,
          "messages": [{"role": "system", "content": system}] + messages},
     )
-    return data["choices"][0]["message"]["content"].strip()
+    return _chat_completion_result(data)
+
+
+def _chat_completion_result(data: dict):
+    """OpenAI-compatible response shape, shared by OpenAI and Azure OpenAI."""
+    u = data.get("usage") or {}
+    return (data["choices"][0]["message"]["content"].strip(),
+            _usage(u.get("prompt_tokens"), u.get("completion_tokens")))
 
 
 def _call_google(api_key, model, system, messages, cfg) -> str:
@@ -169,7 +198,9 @@ def _call_google(api_key, model, system, messages, cfg) -> str:
     if not cand:
         raise ProviderError(f"No response from Gemini: {json.dumps(data)[:400]}")
     parts = cand[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text", "") for p in parts).strip()
+    u = data.get("usageMetadata") or {}
+    return ("".join(p.get("text", "") for p in parts).strip(),
+            _usage(u.get("promptTokenCount"), u.get("candidatesTokenCount")))
 
 
 def _call_azure(api_key, model, system, messages, cfg) -> str:
@@ -184,7 +215,7 @@ def _call_azure(api_key, model, system, messages, cfg) -> str:
         url, {"api-key": api_key, "content-type": "application/json"},
         {"messages": [{"role": "system", "content": system}] + messages},
     )
-    return data["choices"][0]["message"]["content"].strip()
+    return _chat_completion_result(data)
 
 
 def _ollama_endpoint(cfg) -> str:
@@ -209,7 +240,9 @@ def _call_ollama(api_key, model, system, messages, cfg) -> str:
     except requests.exceptions.ConnectionError:
         raise ProviderError(f"Could not reach Ollama at {endpoint} — is it "
                             f"running? (`ollama serve`, or open the Ollama app)")
-    return (data.get("message") or {}).get("content", "").strip()
+    # Local inference is free, but the counts still drive the usage view.
+    return ((data.get("message") or {}).get("content", "").strip(),
+            _usage(data.get("prompt_eval_count"), data.get("eval_count")))
 
 
 _CALLERS = {
@@ -221,9 +254,11 @@ _CALLERS = {
 }
 
 
-def call(provider: str, api_key: str, model: str, system: str,
-         messages, cfg: Optional[dict] = None) -> str:
-    """Send a conversation to `provider` and return the response text.
+def call_with_usage(provider: str, api_key: str, model: str, system: str,
+                    messages, cfg: Optional[dict] = None):
+    """Send a conversation to `provider`; returns (response text, usage).
+    `usage` is {input_tokens, output_tokens, source} as reported by the
+    provider, or None when it reported nothing.
     `messages` is a list of {"role": "user"|"assistant", "content": str};
     a plain string is accepted as a single-turn convenience."""
     if isinstance(messages, str):
@@ -233,6 +268,20 @@ def call(provider: str, api_key: str, model: str, system: str,
     if not api_key and needs_key(provider):
         raise ProviderError("No API key configured for this provider.")
     return _CALLERS[provider](api_key, model, system, messages, cfg or {})
+
+
+def call(provider: str, api_key: str, model: str, system: str,
+         messages, cfg: Optional[dict] = None,
+         usage_out: Optional[dict] = None) -> str:
+    """Response text. Pass a dict as `usage_out` to also receive the token
+    counts the provider billed for — an out-parameter rather than a second
+    return value so this stays the one entry point every caller (and every
+    test stub) already talks to."""
+    text, usage = call_with_usage(provider, api_key, model, system,
+                                  messages, cfg)
+    if usage_out is not None and usage:
+        usage_out.update(usage)
+    return text
 
 
 def needs_key(provider: str) -> bool:
@@ -331,6 +380,7 @@ def public_registry() -> dict:
             "auth": meta.get("auth", "apikey"),
             "key_label": meta["key_label"],
             "key_url": meta["key_url"],
+            "billing_url": meta.get("billing_url", ""),
             "extra_fields": meta["extra_fields"],
             "note": meta.get("note", ""),
         }

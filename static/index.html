@@ -4,6 +4,19 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Log Masker — Secure AI Operations</title>
+  <!-- Apply the saved theme (or the OS appearance) before first paint, so the
+       page never flashes the wrong theme. -->
+  <script>
+    (function () {
+      var theme = "dark";
+      try {
+        var saved = localStorage.getItem("logmasker.theme");
+        if (saved !== "light" && saved !== "dark") saved = null;  // null = follow the OS
+        theme = saved || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      } catch (e) { /* storage blocked — stay on the dark default */ }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -34,11 +47,30 @@
   <main class="main-content">
     <header class="top-header">
       <div class="top-title" id="currentViewTitle">Workspace</div>
-      <div class="top-actions"></div>
+      <div class="top-actions">
+        <div class="theme-switch segmented-control" role="group" aria-label="Colour theme">
+          <button class="segmented-tab theme-opt" type="button" data-theme-pref="light"
+            title="Light" aria-label="Light theme" aria-pressed="false">☀️</button>
+          <button class="segmented-tab theme-opt" type="button" data-theme-pref="dark"
+            title="Dark" aria-label="Dark theme" aria-pressed="false">🌙</button>
+          <button class="segmented-tab theme-opt" type="button" data-theme-pref="system"
+            title="Match macOS appearance" aria-label="Match system appearance" aria-pressed="false">🖥️</button>
+        </div>
+      </div>
     </header>
 
     <!-- VIEWPORT: WORKSPACE -->
     <div class="viewport active" id="workspace-viewport">
+      <!-- API credit / spend, priced locally from this app's own audit log -->
+      <section class="credit-bar" id="creditBar" aria-label="API credit and spend">
+        <div class="credit-bar-head">
+          <h2>API credit</h2>
+          <button id="creditRefresh" class="credit-refresh" type="button"
+            title="Recount from the audit log" aria-label="Refresh credit figures">⟳</button>
+        </div>
+        <div class="credit-cards" id="creditCards"></div>
+      </section>
+
       <div class="workspace-grid">
         <!-- INPUT COLUMN -->
         <div class="work-panel" id="inputPanel">
@@ -156,7 +188,10 @@
 
           <!-- PANE: RESTORED CHAT -->
           <div class="tabpane" id="pane-restored">
-            <div class="redaction-badge" id="redBadge" style="margin-bottom: 12px;">No analysis yet.</div>
+            <div class="conv-status">
+              <div class="redaction-badge" id="redBadge">No analysis yet.</div>
+              <span id="convCost" class="conv-cost hidden"></span>
+            </div>
             <div id="chat" class="chat-container"></div>
 
             <div id="chatControls" class="chat-controls hidden"
@@ -380,7 +415,7 @@
         <div id="oauthSection" class="hidden" style="margin-bottom: 16px;">
           <div class="oauth-redirect" style="margin-bottom: 12px;">
             <span class="hint">Register this Redirect URI in your Entra app (platform: Web):</span>
-            <code id="redirectUri" style="font-family: var(--font-mono); font-size: 11px; background: rgba(0,0,0,0.25); padding: 4px 6px; display: block; word-break: break-all; border-radius: 4px; margin-top: 4px;">…</code>
+            <code id="redirectUri" style="font-family: var(--font-mono); font-size: 11px; background: var(--sunken-2); padding: 4px 6px; display: block; word-break: break-all; border-radius: 4px; margin-top: 4px;">…</code>
           </div>
           <div style="display: flex; gap: 10px;">
             <button id="signInBtn" class="btn btn-primary" style="flex: 1;">🔐 Sign in with Microsoft</button>

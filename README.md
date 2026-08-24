@@ -290,6 +290,53 @@ grep -i "acme" ai_requests.jsonl
 The file is append-only: **Clear view** only empties the on-screen list, and
 the most recent entries are re-loaded from the file on server restart.
 
+### API credit dashboard
+
+The strip at the top of the Workspace shows, per provider, what this app has
+spent — this month and all-time.
+
+**What it can and cannot know.** None of the supported providers exposes a
+remaining-balance endpoint to a normal API key — balances live in the billing
+console, and the OpenAI/Anthropic cost APIs need an org-admin key and report
+*spend*, not what remains. So the dashboard works from the other end:
+
+- every call the app makes is already in `ai_requests.jsonl`, now including the
+  token counts the provider itself returned with the response;
+- those tokens are priced locally (see below) to give spend per provider,
+  month-to-date and all-time;
+- every card links to that provider's billing page — the authoritative number.
+
+Calls made on the same key from anywhere else (another tool, a colleague's
+machine) are invisible here, by construction.
+
+Providers that are not billed per token say so instead: Ollama is **free**
+(local inference) and M365 Copilot is a **per-seat licence**.
+
+**Rates** are USD per 1M tokens, in `pricing.json`. Seeded defaults cover the
+model families the app recognises (Claude opus/sonnet/haiku, GPT/o-series,
+Gemini pro/flash/flash-lite) and are *published list prices* — they drift, they
+ignore batch/cache discounts, and they never match a negotiated or regional
+rate. A model we have no rate for (including every Azure deployment, whose name
+says nothing about its price) is counted in tokens and shown as **set rate**
+rather than costed at a confident $0.00. Click it to enter `input/output` rates;
+history is re-priced immediately.
+
+Requests logged before token capture existed are marked **estimated** — their
+tokens are inferred from character counts (~4 chars/token).
+
+**Cost per conversation.** The Result pane shows a running total for the open
+conversation next to the masking badge — `$0.59 · 3 call(s)`, hover for tokens
+and model. It covers everything billed under that conversation id: the opening
+**Mask & Analyse** plus every follow-up. Ending the conversation closes it out
+with a final figure in the closing message:
+
+> 💵 This conversation cost **$0.0057** — 3 call(s), 6.2K tokens on
+> gemini-3.5-flash.
+
+Connection tests aren't part of any conversation, so they never land on one.
+`/analyze`, `/chat` and `/chat/end` each return the total in a `cost` field if
+you want it from the API.
+
 ### Pre-send leak guard
 
 Before anything is sent, a **second, independent** scanner checks the already-
@@ -380,4 +427,5 @@ memory — ending one (or restarting the server) forgets it.
 python test_masker.py
 python test_vault.py
 python test_providers.py
+python test_credits.py
 ```
