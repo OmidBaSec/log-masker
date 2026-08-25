@@ -15,6 +15,35 @@ if (typeof require !== "undefined") {
     globalThis.module = undefined;
     eval(readFile("./static/encoding.js"));   // eslint-disable-line no-eval
     LogEncoding = globalThis.LogEncoding;
+    if (typeof TextDecoder === "undefined") {
+        globalThis.TextDecoder = function (encoding) {
+            this.encoding = (encoding || "utf-8").toLowerCase();
+        };
+        globalThis.TextDecoder.prototype.decode = function (bytes) {
+            var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            var s = "", i = 0;
+            if (this.encoding === "utf-16le") {
+                for (i = 0; i < u8.length; i += 2) {
+                    s += String.fromCharCode(u8[i] | (u8[i + 1] << 8));
+                }
+                return s;
+            }
+            if (this.encoding === "utf-16be") {
+                for (i = 0; i < u8.length; i += 2) {
+                    s += String.fromCharCode((u8[i] << 8) | u8[i + 1]);
+                }
+                return s;
+            }
+            while (i < u8.length) {
+                var b = u8[i++];
+                if (b < 0x80) { s += String.fromCharCode(b); }
+                else if (b < 0xe0) { s += String.fromCharCode(((b & 0x1f) << 6) | (u8[i++] & 0x3f)); }
+                else if (b < 0xf0) { s += String.fromCharCode(((b & 0x0f) << 12) | ((u8[i++] & 0x3f) << 6) | (u8[i++] & 0x3f)); }
+                else { s += String.fromCharCode(b); }
+            }
+            return s;
+        };
+    }
 }
 
 var failures = 0;
