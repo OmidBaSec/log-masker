@@ -6,6 +6,37 @@ hostnames, IPs, MAC addresses, API keys, tokens, UUIDs, account numbers…) are
 masked **locally** before anything leaves your machine. The AI analyses the
 masked logs, and the real values are restored **locally** in the response.
 
+## What this tool does and does not guarantee
+
+Read this before pointing it at production logs.
+
+Masking is **pattern-based and best-effort**. It recognises the categories
+listed below plus the terms and regexes you add, and it is tested hard (see
+[Tests](#tests) — 522 checks, most of them masking cases). It cannot recognise
+what it has never been taught: an internal codename, an unusual identifier
+format, a customer name written in a way no rule matches. The **pre-send leak
+guard** is an independent second pass that catches many such misses, and the
+masked text is shown to you in full before anything is sent — but neither is a
+guarantee.
+
+Concretely:
+
+* **You are responsible for what leaves your machine.** Review the *Masked
+  data* tab before sending. That is why it exists.
+* **The audit log records what was sent**, in masked form. It is evidence of
+  the content of each request — it is not proof that no sensitive data was ever
+  transmitted.
+* **The AI provider still receives your logs**, structurally intact. Placeholder
+  patterns, timestamps, event sequences and volumes can themselves be
+  informative. If your policy forbids sending any operational data to a third
+  party, use the local-model (Ollama) provider, which never leaves the machine.
+* **Cost figures are local estimates**, priced from published list rates that
+  drift. Your provider's bill is the authority.
+* **No warranty of any kind.** Use it on data you are authorised to handle.
+
+If you find a masking gap, please report it — a failing sample log makes an
+excellent bug report and usually becomes a new test case.
+
 ## Supported AI providers
 
 Choose one in **⚙ Setup** (provider + model + API key):
@@ -96,7 +127,7 @@ the masked text is sent to the Claude API.
 
 ## What gets masked
 
-Toggle these categories in the UI:
+Every analysis masks all three categories:
 
 - **Identities** — emails, `user=`/`username=`/`login=` values, `DOMAIN\user`,
   Windows SIDs (`S-1-5-21-…`), Active Directory distinguished names
@@ -201,12 +232,43 @@ override ever becomes invalid on disk, the default is used instead.
 
 ## Setup
 
+**Requires Python 3.11 or newer.** Earlier versions cannot install the current,
+patched releases of Starlette and python-multipart, so 3.9/3.10 would leave you
+running known-vulnerable dependencies. Check with `python3 -V`.
+
+<details open>
+<summary><b>macOS / Linux</b></summary>
+
 ```bash
 cd log_masker_app
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock     # exact, resolved versions
 ```
+</details>
+
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
+
+```powershell
+cd log_masker_app
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.lock
+```
+</details>
+
+No Python 3.11+ on the machine and no admin rights? [uv](https://docs.astral.sh/uv/)
+installs one per-user, without touching the system Python:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh     # Windows: see the uv docs
+uv python install 3.13
+uv venv --python 3.13 --seed .venv
+```
+
+`requirements.txt` pins the direct dependencies; `requirements.lock` is the full
+resolved set and is what CI installs.
 
 ### Provider + API key
 
@@ -222,12 +284,66 @@ saved key per provider.
 
 ## Run
 
+The launcher is pure Python and behaves the same on macOS, Windows and Linux:
+
 ```bash
-cd log_masker_app
-./run.sh start              # background on a random free port; ./run.sh url to get it
-# or, for development:
-uvicorn app:app --reload --port 8000   # then open http://127.0.0.1:8000
+python cli.py start --open     # background, then open a browser
+python cli.py status           # version, data directory, secret backend
+python cli.py logs -f          # follow the server log
+python cli.py stop
+python cli.py where            # where data and secrets live on this OS
 ```
+
+Shell wrappers are provided for habit and for double-clicking — they all just
+call `cli.py`:
+
+| Platform | Wrapper |
+|---|---|
+| macOS / Linux | `./run.sh start` |
+| Windows (PowerShell) | `.\run.ps1 start` |
+| Windows (cmd) | `run.bat start` |
+
+For development, run the server in the foreground:
+
+```bash
+uvicorn app:app --reload --port 8000    # then open http://127.0.0.1:8000
+```
+
+**It only listens on `127.0.0.1`, and it refuses to start on any other
+interface.** There is no login: anything that can reach the port can read the
+entity vault and spend your API credit. To expose it deliberately, put an
+authenticating proxy in front and set `LOGMASKER_ALLOW_REMOTE=1` plus
+`LOGMASKER_ALLOWED_HOSTS=<your hostname>`.
+
+### Where your data lives
+
+`python cli.py where` prints it. The rules, in order:
+
+1. `LOGMASKER_DATA_DIR`, if set (this is what Docker and portable installs use).
+2. The application directory, if it already contains data — so an existing
+   install is never relocated.
+3. Otherwise the standard per-user location:
+   `~/Library/Application Support/LogMasker` (macOS), `%APPDATA%\LogMasker`
+   (Windows), `$XDG_DATA_HOME/logmasker` (Linux).
+
+API keys and the vault key go to the OS keychain (macOS Keychain, Windows
+Credential Manager, Freedesktop Secret Service). Where there is no keychain —
+a container, a headless Linux box, SSH without a D-Bus session — they fall back
+to an encrypted file in the data directory, whose master key comes from
+`LOGMASKER_MASTER_KEY` if set, otherwise a `master.key` file created with
+owner-only permissions. On a server, set `LOGMASKER_MASTER_KEY` from your secret
+manager so the key never lands on disk.
+
+## Log file encodings
+
+Uploaded logs are decoded from their actual bytes rather than assumed to be
+UTF-8. Windows exports — Event Viewer, `Get-WinEvent | Out-File`, IIS — are
+routinely **UTF-16 LE with a BOM and CRLF line endings**, and are detected by
+their byte-order mark or, when a tool omits it, by their NUL pattern. UTF-16 BE
+and UTF-8 with a BOM are handled too; the BOM character is stripped and CRLF
+(and bare CR) are normalised to LF before masking. UTF-32 is refused with a
+message rather than silently mangled. The detected encoding is shown in the
+status line when it is not plain UTF-8.
 
 ## SOC analysis templates (MITRE ATT&CK)
 
@@ -256,7 +372,7 @@ and phishing. Each is mapped to its **MITRE ATT&CK tactic + technique ID**
 
 1. Paste raw logs — or **📎 upload / drag & drop a log file** (text formats,
    up to 10 MB; it is read locally in the browser and never uploaded
-   anywhere). Pick which categories to mask and a model. Apply a SOC template
+   anywhere). Pick a model. Apply a SOC template
    (suggested ⚡ chip or the searchable dropdown) for a guided prompt.
    The masked version appears immediately in **Sent to AI**, where
    **⬇ Download masked** saves it as `<name>.masked.txt` for offline review
@@ -317,9 +433,11 @@ model families the app recognises (Claude opus/sonnet/haiku, GPT/o-series,
 Gemini pro/flash/flash-lite) and are *published list prices* — they drift, they
 ignore batch/cache discounts, and they never match a negotiated or regional
 rate. A model we have no rate for (including every Azure deployment, whose name
-says nothing about its price) is counted in tokens and shown as **set rate**
-rather than costed at a confident $0.00. Click it to enter `input/output` rates;
-history is re-priced immediately.
+says nothing about its price) has its tokens counted but contributes $0.00 to
+the spend figure — so a card can understate what you actually spent. Give it a
+rate with `POST /credits/rate` (`{"model": ..., "input_per_m": 3,
+"output_per_m": 15}`) or by editing `pricing.json` directly; costs are computed
+at read time, so history re-prices immediately.
 
 Requests logged before token capture existed are marked **estimated** — their
 tokens are inferred from character counts (~4 chars/token).
@@ -424,8 +542,11 @@ memory — ending one (or restarting the server) forgets it.
 ## Tests
 
 ```bash
-python test_masker.py
-python test_vault.py
-python test_providers.py
-python test_credits.py
+python test_masker.py      # masking, leak guard, prompt assembly
+python test_vault.py       # persistent entity vault
+python test_providers.py   # provider abstraction + usage capture
+python test_credits.py     # pricing and spend accounting
+python test_security.py    # request guard, data paths, secret storage
+python test_cli.py         # launcher: start/stop/status on this OS
+node   test_frontend.js    # log-file encoding detection (browser-side)
 ```
