@@ -78,6 +78,86 @@ jobs:
           # ensurepip, which some standalone interpreters do not ship.
           pip-audit --progress-spinner off
 
+  docker:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The image is documented as multi-arch; prove both targets still build.
+      # Multi-platform results cannot be loaded into the daemon, so this step
+      # only builds.
+      - name: Build for amd64 and arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build for this runner and load it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: log-masker:ci
+          cache-from: type=gha
+
+      # A container that starts is not the same as one that works. Check the
+      # things the Dockerfile actually promises.
+      - name: Smoke test the container
+        run: |
+          docker run -d --name lm-ci -p 127.0.0.1:8888:8888 -v lm-ci-data:/data log-masker:ci
+
+          # Wait on the image's own HEALTHCHECK rather than a fixed sleep.
+          for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' lm-ci)
+            [ "$status" = "healthy" ] && break
+            [ "$status" = "unhealthy" ] && { docker logs lm-ci; exit 1; }
+            sleep 2
+          done
+          [ "$status" = "healthy" ] || { echo "never became healthy"; docker logs lm-ci; exit 1; }
+          echo "healthcheck: $status"
+
+          H='Host: localhost:8888'
+
+          echo "runs as uid $(docker exec lm-ci id -u)"
+          [ "$(docker exec lm-ci id -u)" != "0" ] || { echo "running as root"; exit 1; }
+
+          masked=$(curl -sS -H "$H" -X POST -H 'content-type: application/json' \
+            -d '{"logs":"user=jsmith from 10.4.2.19"}' http://127.0.0.1:8888/preview \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["masked"])')
+          echo "masking: $masked"
+          case "$masked" in *"[USER_"*"[IP_"*) ;; *) echo "no placeholders"; exit 1;; esac
+          case "$masked" in *jsmith*|*10.4.2.19*) echo "raw values survived!"; exit 1;; *) ;; esac
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: evil.example' http://127.0.0.1:8888/healthz)
+          echo "rebound Host -> $code"; [ "$code" = "403" ] || exit 1
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "$H" -H 'Origin: https://evil.example' \
+            -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:8888/preview)
+          echo "cross-origin POST -> $code"; [ "$code" = "403" ] || exit 1
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "$H" http://127.0.0.1:8888/static/encoding.js)
+          echo "static asset -> $code"; [ "$code" = "200" ] || exit 1
+
+          # State must survive a restart on the mounted volume.
+          curl -sS -H "$H" -X POST -H 'content-type: application/json' \
+            -d '{"provider":"openai","model":"gpt-5.5"}' http://127.0.0.1:8888/test >/dev/null || true
+          before=$(docker exec lm-ci sh -c 'wc -l < /data/ai_requests.jsonl')
+          docker restart lm-ci >/dev/null && sleep 8
+          after=$(docker exec lm-ci sh -c 'wc -l < /data/ai_requests.jsonl')
+          echo "audit entries before/after restart: $before/$after"
+          [ "$before" = "$after" ] || { echo "volume did not persist"; exit 1; }
+
+      - name: Compose file is valid
+        run: |
+          docker compose config --quiet
+          docker compose --profile local config --services
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
