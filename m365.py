@@ -24,8 +24,9 @@ from typing import Dict, Optional, Tuple
 
 import msal
 
-APP_DIR = os.path.dirname(__file__)
-CACHE_FILE = os.path.join(APP_DIR, "m365_token_cache.json")
+import paths
+
+CACHE_FILE = paths.data_file("m365_token_cache.json")
 
 GRAPH = "https://graph.microsoft.com/beta"
 

@@ -92,21 +92,6 @@
               placeholder="Paste raw logs here (or upload / drop a file)…&#10;e.g. 2026-06-09 10:31 user=jsmith login from 10.4.2.19 to vpn.acme-corp.com token=sk-abc123…"></textarea>
           </div>
 
-          <div class="categories-selector cats">
-            <label class="pill-checkbox">
-              <input type="checkbox" value="identities" checked />
-              <span>👤 Identities <small>(users, emails)</small></span>
-            </label>
-            <label class="pill-checkbox">
-              <input type="checkbox" value="network" checked />
-              <span>🌐 Network <small>(domains, IPs, MAC)</small></span>
-            </label>
-            <label class="pill-checkbox">
-              <input type="checkbox" value="secrets" checked />
-              <span>🔑 Secrets / IDs <small>(keys, tokens, UUIDs)</small></span>
-            </label>
-          </div>
-
           <div class="config-group">
             <div class="control-select">
               <label>AI Provider</label>
@@ -495,6 +480,7 @@
     </div>
   </div>
 
+  <script src="/static/encoding.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

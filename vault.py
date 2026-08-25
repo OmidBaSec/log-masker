@@ -9,9 +9,10 @@ enables cross-incident correlation ("this host appeared in 3 incidents this
 week") that can even be shared with the AI — as placeholder statistics only,
 never real values.
 
-Storage: entity_vault.enc next to the app, encrypted with a Fernet key that
-lives in the OS keychain (service "log_masker", entry "vault_key") — the same
-keychain that already guards the provider API keys. The real values inside
+Storage: entity_vault.enc in the data directory (see paths.py), encrypted with
+a Fernet key held by keystore.py — the OS keychain where there is one, an
+encrypted file where there isn't (headless Linux, containers) — the same store
+that guards the provider API keys. The real values inside
 never leave this machine, exactly like the per-conversation mappings.
 
 The vault also records which incident (conversation) each entity appeared in,
@@ -27,9 +28,10 @@ from collections import Counter
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
-_DIR = os.path.dirname(os.path.abspath(__file__))
-VAULT_FILE = os.path.join(_DIR, "entity_vault.enc")
-KEYRING_SERVICE = "log_masker"
+import keystore
+import paths
+
+VAULT_FILE = paths.data_file("entity_vault.enc")
 KEYRING_ENTRY = "vault_key"
 
 _PH = re.compile(r"^\[([A-Z0-9]+)_(\d+)\]$")
@@ -82,11 +84,12 @@ def _fernet():
         from cryptography.fernet import Fernet
         key = _OVERRIDE["key"]
         if not key:
-            import keyring
-            key = keyring.get_password(KEYRING_SERVICE, KEYRING_ENTRY)
+            # keystore falls back to an encrypted file where no OS keychain
+            # exists (headless Linux, containers) — see keystore.py.
+            key = keystore.get_secret(KEYRING_ENTRY)
             if not key:
                 key = Fernet.generate_key().decode()
-                keyring.set_password(KEYRING_SERVICE, KEYRING_ENTRY, key)
+                keystore.set_secret(KEYRING_ENTRY, key)
         _FERNET = Fernet(key.encode() if isinstance(key, str) else key)
     return _FERNET
 
@@ -139,7 +142,8 @@ def _save(data: dict) -> None:
 
 
 def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """ISO-8601 with offset — see the note in app.py's _log_request."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------

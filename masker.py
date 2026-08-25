@@ -16,6 +16,8 @@ import os
 import re
 from typing import Dict, List, Tuple
 
+import paths
+
 # ---------------------------------------------------------------------------
 # Detection patterns, ordered from most specific to least specific.
 #
@@ -434,8 +436,7 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
 if len(_PATTERN_META) != len(_DEFAULT_PATTERNS):
     raise RuntimeError("_PATTERN_META is out of sync with _compile_patterns()")
 
-OVERRIDES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "builtin_overrides.json")
+OVERRIDES_FILE = paths.data_file("builtin_overrides.json")
 
 
 def load_overrides() -> Dict[str, str]:
@@ -532,8 +533,7 @@ def reset_builtin_pattern(pattern_id: str) -> None:
 # working for every log pasted later. If a regex has a capture group, only the
 # group is masked (key=value style); otherwise the whole match is.
 # ---------------------------------------------------------------------------
-PATTERNS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "custom_patterns.json")
+PATTERNS_FILE = paths.data_file("custom_patterns.json")
 
 
 def load_custom_patterns() -> List[Dict[str, str]]:
@@ -770,13 +770,18 @@ def mask(text: str, enabled: List[str],
 
     # Collect non-overlapping spans to replace: (start, end, real_value, label).
     spans: List[Tuple[int, int, str, str]] = []
-    taken: List[Tuple[int, int]] = []
+    # Which character positions are already claimed by an earlier (higher
+    # priority) pattern. A bitmap rather than a list of spans: a big log yields
+    # tens of thousands of matches, and checking each one against every span
+    # taken so far is quadratic — that alone took masking of a 0.5 MB log from
+    # sub-second to minutes.
+    claimed = bytearray(len(text))
 
     def overlaps(s: int, e: int) -> bool:
-        for ts, te in taken:
-            if s < te and e > ts:
-                return True
-        return False
+        return claimed.find(1, s, e) >= 0
+
+    def take(s: int, e: int) -> None:
+        claimed[s:e] = b"\x01" * (e - s)
 
     # CSV exports first: whole sensitive cells (bare usernames, network and
     # device names that no regex could anchor on) claim their spans before
@@ -787,7 +792,7 @@ def mask(text: str, enabled: List[str],
             continue
         if overlaps(s, e):
             continue
-        taken.append((s, e))
+        take(s, e)
         spans.append((s, e, real, label))
         csv_cells.add((label, real))
     # Re-mask CSV cell values wherever else they appear (e.g. inside free-text
@@ -813,7 +818,7 @@ def mask(text: str, enabled: List[str],
                 continue
             if overlaps(s, e):
                 continue
-            taken.append((s, e))
+            take(s, e)
             spans.append((s, e, real, label))
 
     # Assign stable placeholders. Same real value -> same placeholder.
@@ -835,9 +840,13 @@ def mask(text: str, enabled: List[str],
         except (TypeError, ValueError):
             continue
 
-    # Replace from the end so earlier indices stay valid.
+    # Two passes over the spans, for two different reasons.
+    #
+    # 1. Numbering, walking backwards from the end of the text — this is the
+    #    order placeholders have always been assigned in, and callers (and the
+    #    vault) depend on which occurrence becomes _1.
     spans.sort(key=lambda x: x[0], reverse=True)
-    out = text
+    placed: List[Tuple[int, int, str]] = []
     for s, e, real, label in spans:
         key = (label, real)
         placeholder = reverse.get(key)
@@ -846,9 +855,22 @@ def mask(text: str, enabled: List[str],
             placeholder = f"[{label}_{counters[label]}]"
             reverse[key] = placeholder
             mapping[placeholder] = real
-        out = out[:s] + placeholder + out[e:]
+        placed.append((s, e, placeholder))
 
-    return out, mapping
+    # 2. Rebuilding, forwards, by joining the gaps between spans. Slicing the
+    #    whole text once per replacement (out[:s] + ph + out[e:]) copies the
+    #    entire log for every match — 60k matches in a 2 MB file meant tens of
+    #    gigabytes of copying. Spans never overlap, so a single pass works.
+    placed.reverse()                      # ascending by start position
+    pieces: List[str] = []
+    last = 0
+    for s, e, placeholder in placed:
+        pieces.append(text[last:s])
+        pieces.append(placeholder)
+        last = e
+    pieces.append(text[last:])
+
+    return "".join(pieces), mapping
 
 
 def unmask(text: str, mapping: Dict[str, str]) -> str:

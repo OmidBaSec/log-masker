@@ -2,10 +2,6 @@
 
 const $ = (id) => document.getElementById(id);
 
-function selectedCategories() {
-  return [...document.querySelectorAll(".cats input:checked")].map((c) => c.value);
-}
-
 function customTerms() {
   return $("customTerms").value
     .split(/[\n,]/)
@@ -264,7 +260,7 @@ async function runPreview() {
     const r = await fetch("/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ logs, categories: selectedCategories(), custom_terms: customTerms() }),
+      body: JSON.stringify({ logs, custom_terms: customTerms() }),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || "Preview failed");
@@ -302,9 +298,6 @@ function scheduleAutoPreview() {
 }
 $("logs").addEventListener("input", scheduleAutoPreview);
 $("customTerms").addEventListener("input", scheduleAutoPreview);
-document.querySelectorAll(".cats input").forEach((c) =>
-  c.addEventListener("change", scheduleAutoPreview)
-);
 
 // --- Full prompt preview --------------------------------------------------
 // The instructions actually sent = the selected template's prompt (if its
@@ -343,7 +336,6 @@ async function refreshPromptPreview() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         logs,
-        categories: selectedCategories(),
         custom_terms: customTerms(),
         instructions: effectiveInstructions() || null,
         structured: $("structuredChk").checked,
@@ -406,18 +398,27 @@ function loadLogFile(file) {
   }
   const reader = new FileReader();
   reader.onload = () => {
-    const text = String(reader.result || "");
+    // Read the bytes, not a UTF-8 string: Windows log exports are routinely
+    // UTF-16 with a BOM, which readAsText would turn into NUL-laden mojibake
+    // (and the binary check below would then reject as "not a text log").
+    const decoded = LogEncoding.decodeLogBytes(reader.result);
+    if (decoded.error) return setStatus(decoded.error, "err");
+    const text = decoded.text;
     if (text.includes("\u0000")) {
       return setStatus("That looks like a binary file — only text logs are supported. For spreadsheets, export as CSV first.", "err");
     }
     uploadedFileName = file.name;
     $("logs").value = text;
     showFileChip(file.name, text);
-    setStatus(`Loaded ${file.name} — masking locally…`);
+    const notes = [];
+    if (decoded.encoding !== "utf-8") notes.push(decoded.encoding.toUpperCase());
+    if (decoded.hadCrlf) notes.push("CRLF");
+    setStatus(`Loaded ${file.name}${notes.length ? ` (${notes.join(", ")})` : ""}` +
+              " — masking locally…");
     scheduleAutoPreview();   // masks, fills "Sent to AI", suggests templates
   };
   reader.onerror = () => setStatus("Could not read the file.", "err");
-  reader.readAsText(file);
+  reader.readAsArrayBuffer(file);
 }
 
 // Send an .xlsx/.xlsm to the local server, which returns CSV text. The masked
@@ -1480,7 +1481,6 @@ async function doAnalyze(acknowledgeLeaks = false) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         logs,
-        categories: selectedCategories(),
         custom_terms: customTerms(),
         instructions: effectiveInstructions() || null,
         structured: $("structuredChk").checked,
@@ -1748,7 +1748,7 @@ function renderVault() {
     const dtd = document.createElement("td");
     dtd.colSpan = 7;
     dtd.innerHTML = (e.incidents || []).map((i) =>
-      `<div class="vault-inc">${escapeHtml(i.time || "unknown time")} — ` +
+      `<div class="vault-inc">${i.time ? fmtTime(i.time) : "unknown time"} — ` +
       `${verdictBadge(i.verdict)}` +
       `${i.severity ? " · " + escapeHtml(i.severity) : ""} ` +
       `<span class="hint">(conversation ${escapeHtml(i.id)})</span></div>`
@@ -1830,10 +1830,24 @@ async function loadRequests() {
   }
 }
 
-// Parse an audit "YYYY-MM-DD HH:MM:SS" timestamp to epoch ms (NaN if invalid).
+// Audit timestamps are ISO-8601 with an offset ("2026-08-24T13:05:00+02:00").
+// Entries written before that change carry "YYYY-MM-DD HH:MM:SS" and are read
+// as local time, which is what they were.
 function parseReqTime(t) {
   if (!t) return NaN;
   return new Date(t.replace(" ", "T")).getTime();
+}
+
+// Long ISO strings are for the file, not the eye: show local wall-clock time
+// and keep the exact value (offset included) on hover.
+function fmtTime(t) {
+  const ms = parseReqTime(t);
+  if (isNaN(ms)) return escapeHtml(t || "");
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `<span title="${escapeHtml(t)}">${d.getFullYear()}-${pad(d.getMonth() + 1)}-` +
+    `${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:` +
+    `${pad(d.getSeconds())}</span>`;
 }
 
 // Render lastRequests into the list, applying the From/To datetime filter.
@@ -1882,7 +1896,7 @@ function renderRequests() {
       sum.innerHTML =
         `<span class="req-status">${r.ok ? "✓" : "✗"}</span>` +
         `<span class="req-seq">#${r.seq}</span>` +
-        `<span>${escapeHtml(r.time)}</span>` +
+        `<span>${fmtTime(r.time)}</span>` +
         `<span class="req-kind">${escapeHtml(r.kind)}</span>` +
         `<span class="req-model">${escapeHtml(r.provider)} · ${escapeHtml(r.model)}</span>` +
         (r.leakguard ? `<span class="pat-modified" title="Sent after the analyst acknowledged leak-guard findings">🚨 leak ack</span>` : "") +
@@ -2503,18 +2517,6 @@ async function loadCredits() {
   }
 }
 
-async function postCredits(path, body) {
-  const r = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.detail || "Could not save that.");
-  CREDITS = d;
-  renderCredits();
-}
-
 // Show a provider once it is worth showing: set up, used at some point, or
 // the one currently selected. Keeps the strip short on a fresh install.
 // Local inference has nothing to spend, so it never earns a card here.
@@ -2586,18 +2588,7 @@ function creditCard(p) {
   const actions = document.createElement("div");
   actions.className = "credit-actions";
 
-  // A model we have no rate for is counted in tokens but priced at zero —
-  // say so rather than showing a confidently wrong $0.00.
-  const unpriced = p.all_time.unpriced || [];
-  if (unpriced.length) {
-    const flag = document.createElement("button");
-    flag.className = "credit-flag credit-btn";
-    flag.type = "button";
-    flag.textContent = `set rate: ${unpriced[0]}`;
-    flag.title = `No price is known for ${unpriced.join(", ")}, so its tokens are counted but not costed.`;
-    flag.addEventListener("click", () => editRate(unpriced[0]));
-    actions.appendChild(flag);
-  } else if (p.month.estimated_requests) {
+  if (p.month.estimated_requests) {
     const flag = document.createElement("span");
     flag.className = "credit-flag";
     flag.textContent = "estimated";
@@ -2608,31 +2599,6 @@ function creditCard(p) {
   }
   if (actions.childElementCount) card.appendChild(actions);
   return card;
-}
-
-// Rates are USD per 1M tokens. Needed for Azure deployments (whose name says
-// nothing about the price) and for any model family we don't recognise.
-async function editRate(model) {
-  const answer = window.prompt(
-    `Price for "${model}" in USD per 1M tokens, as input/output.\n` +
-      "Check your provider's pricing page — e.g. 3/15",
-    ""
-  );
-  if (answer === null) return;
-  const parts = answer.split(/[\/,\s]+/).filter(Boolean).map(Number);
-  if (parts.length !== 2 || parts.some((n) => !isFinite(n) || n < 0)) {
-    return setStatus("Enter two non-negative numbers, e.g. 3/15.", "err");
-  }
-  try {
-    await postCredits("/credits/rate", {
-      model,
-      input_per_m: parts[0],
-      output_per_m: parts[1],
-    });
-    setStatus(`Rate saved for ${model} — history re-priced.`, "ok");
-  } catch (e) {
-    setStatus(e.message, "err");
-  }
 }
 
 function renderCredits() {

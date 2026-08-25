@@ -1,7 +1,7 @@
 """
 Local persistence for the user's custom always-mask terms and saved regex
 patterns. A single global store (no multi-tenant separation) kept in
-custom_store.json next to the app.
+custom_store.json in the data directory (see paths.py).
 
 On first run it migrates anything previously saved: custom patterns from the
 legacy custom_patterns.json, and — if present — the terms/patterns of the old
@@ -12,10 +12,11 @@ import json
 import os
 from typing import Dict, List
 
-_DIR = os.path.dirname(os.path.abspath(__file__))
-STORE_FILE = os.path.join(_DIR, "custom_store.json")
-LEGACY_PATTERNS_FILE = os.path.join(_DIR, "custom_patterns.json")
-LEGACY_WORKSPACES_FILE = os.path.join(_DIR, "workspaces.json")
+import paths
+
+STORE_FILE = paths.data_file("custom_store.json")
+LEGACY_PATTERNS_FILE = paths.data_file("custom_patterns.json")
+LEGACY_WORKSPACES_FILE = paths.data_file("workspaces.json")
 
 
 def _migrate() -> dict:

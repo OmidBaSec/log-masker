@@ -25,10 +25,10 @@ import os
 from datetime import datetime
 from typing import Dict, Optional
 
+import paths
 import pricing
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(APP_DIR, "ai_requests.jsonl")
+LOG_FILE = paths.data_file("ai_requests.jsonl")
 
 # buckets[provider][model][month] = {requests, in, out, estimated}
 # conversations[id][model]         = the same, for one analyse + its follow-ups

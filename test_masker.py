@@ -1006,7 +1006,25 @@ def test_system_prompt():
         _restore_file(appmod.CONFIG_FILE, backup)
 
 
+def test_masking_stays_linear():
+    """Masking was quadratic twice over: an O(n2) overlap scan and a full-text
+    copy per replacement. A 1 MB log took minutes. Guard the fix — this is a
+    denial-of-service property, not just a speed nicety."""
+    import time
+    line = ("2026-06-09 10:31:02 sshd[1234]: Failed password for jsmith from "
+            "10.4.2.19 port 5121 ssh2 user=j.smith@acme-corp.com "
+            "host=ws07.acme.local\n")
+    text = (line * (1024 * 1024 // len(line) + 1))[:1024 * 1024]
+    start = time.time()
+    masker.mask(text, ["identities", "network", "secrets"], [], [])
+    elapsed = time.time() - start
+    # ~0.6 s on a 2024 laptop; 10 s still catches a return to quadratic, which
+    # cost minutes at this size.
+    check(f"1 MB masks in well under 10 s (took {elapsed:.2f}s)", elapsed < 10)
+
+
 if __name__ == "__main__":
+    test_masking_stays_linear()
     test_roundtrip()
     test_ipv6_vs_timestamp()
     test_bare_hostname_param()

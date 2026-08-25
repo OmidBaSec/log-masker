@@ -5,7 +5,7 @@ None of the providers we support hands a plain API key a "remaining credit"
 figure — balances live behind the billing consoles (and, for OpenAI/Anthropic,
 behind org-admin keys that report *spend*, not what is left). So the dashboard
 works the other way round: the app counts the tokens it spends and prices them
-locally, then subtracts that from a credit/budget figure the analyst enters.
+locally.
 
 Rates are USD per 1M tokens and are deliberately editable. The seeded values
 are published list prices for model *families* we recognise; they drift, they
@@ -19,8 +19,9 @@ import os
 import re
 from typing import Dict, Optional, Tuple
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-RATES_FILE = os.path.join(APP_DIR, "pricing.json")
+import paths
+
+RATES_FILE = paths.data_file("pricing.json")
 
 # Characters per token when a request predates usage capture (or the provider
 # returned no usage block). Deliberately crude — entries priced this way are

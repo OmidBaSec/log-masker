@@ -16,6 +16,8 @@ import os
 import re
 from typing import Dict, List, Tuple
 
+import paths
+
 
 # ---------------------------------------------------------------------------
 # Template definitions. `signals` weights are summed per template; the strings
@@ -389,8 +391,7 @@ EDITABLE_FIELDS = ("name", "category", "tactic", "tactic_id",
 # Custom templates auto-suggest via simple keyword signals (each keyword is a
 # case-insensitive substring match, weight 2).
 # ---------------------------------------------------------------------------
-STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "templates_store.json")
+STORE_FILE = paths.data_file("templates_store.json")
 
 
 def _load_store() -> dict:

@@ -13,7 +13,9 @@ Flow:
      values, locally, and shown to you.
 
 The mask -> real mapping never leaves the server process. API keys live in the
-OS keychain (via keyring); non-secret settings live in app_config.json.
+OS keychain where the platform has one and in an encrypted file where it does
+not (see keystore.py); non-secret settings live in app_config.json, inside the
+per-OS data directory resolved by paths.py.
 """
 
 import os
@@ -22,17 +24,20 @@ import sys
 import json
 import time
 import uuid
-import keyring
 from collections import deque
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from fastapi.responses import (HTMLResponse, FileResponse,
+                               JSONResponse, RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import guard
+import keystore
 import masker
+import paths
 import providers
 import m365
 import templates
@@ -49,10 +54,21 @@ if sys.stdout.encoding != "utf-8":
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-APP_DIR = os.path.dirname(__file__)
+# The code lives wherever it was installed; data lives wherever paths.py says
+# (see it for the per-OS rules). Only STATIC_DIR is tied to the code.
+VERSION = "0.9.0"
+
+# Spreadsheet import limits. openpyxl on an untrusted archive is the one place
+# this app does heavy parsing of a file it did not create.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_EXPANDED_BYTES = 200 * 1024 * 1024
+MAX_EXPANSION_RATIO = 200
+MAX_CELLS = 2_000_000
+MAX_PARSE_SECONDS = 60
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(APP_DIR, "static")
-CONFIG_FILE = os.path.join(APP_DIR, "app_config.json")
-KEYRING_SERVICE = "log_masker"
+CONFIG_FILE = paths.data_file("app_config.json")
 
 # Non-secret settings persisted to CONFIG_FILE.
 #   provider         -> the DEFAULT provider used for analysis
@@ -98,7 +114,23 @@ DEFAULT_SYSTEM_PROMPT = (
     "reference the placeholder identifiers involved."
 )
 
-app = FastAPI(title="Log Masker")
+app = FastAPI(title="Log Masker", version=VERSION)
+
+
+# A local server with no login is only as safe as its provenance checks; see
+# guard.py for what each one stops. Startup is refused outright when the app is
+# being bound somewhere the whole network can reach.
+_BIND_PROBLEM = guard.startup_check()
+if _BIND_PROBLEM:
+    raise RuntimeError(_BIND_PROBLEM)
+
+
+@app.middleware("http")
+async def request_guard(request: Request, call_next):
+    problem = guard.check(request.method, request.headers)
+    if problem:
+        return JSONResponse({"detail": problem}, status_code=403)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -314,15 +346,10 @@ def build_system(cfg: dict, use_system: bool, instructions: Optional[str],
 
 
 def get_api_key(provider: str) -> Optional[str]:
-    """Resolve a provider's key: keychain first, then env var."""
-    try:
-        k = keyring.get_password(KEYRING_SERVICE, f"{provider}_api_key")
-        if k:
-            return k.strip()
-    except Exception:
-        pass
-    env = os.environ.get(ENV_KEYS.get(provider, ""), "")
-    return env.strip() if env else None
+    """Resolve a provider's key: the OS keychain or its encrypted-file stand-in,
+    then the provider's environment variable. See keystore.py."""
+    return keystore.get_secret(f"{provider}_api_key",
+                               ENV_KEYS.get(provider, ""))
 
 
 # ---------------------------------------------------------------------------
@@ -405,19 +432,16 @@ def save_key(req: KeyRequest):
     if req.provider not in providers.PROVIDERS:
         raise HTTPException(400, f"Unknown provider: {req.provider}")
     try:
-        keyring.set_password(KEYRING_SERVICE, f"{req.provider}_api_key",
-                             req.api_key.strip())
+        where = keystore.set_secret(f"{req.provider}_api_key",
+                                    req.api_key.strip())
     except Exception as e:
         raise HTTPException(500, f"Could not save key: {e}")
-    return {"ok": True}
+    return {"ok": True, "stored_in": where}
 
 
 @app.post("/delete-key")
 def delete_key(req: ProviderRequest):
-    try:
-        keyring.delete_password(KEYRING_SERVICE, f"{req.provider}_api_key")
-    except Exception:
-        pass
+    keystore.delete_secret(f"{req.provider}_api_key")
     return {"ok": True}
 
 
@@ -793,7 +817,35 @@ async def convert_xlsx(file: UploadFile = File(...)):
 
     import io
     import csv
-    data = await file.read()
+    import zipfile
+
+    # An .xlsx is a zip archive, so it is a zip bomb waiting to happen: a few
+    # hundred KB can expand to gigabytes of XML and take the process down. Read
+    # with a hard cap, then refuse implausible expansion before openpyxl parses
+    # anything.
+    data = b""
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                413, f"Spreadsheets are limited to "
+                     f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            expanded = sum(i.file_size for i in z.infolist())
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "That file is not a readable .xlsx/.xlsm.")
+    if expanded > MAX_EXPANDED_BYTES:
+        raise HTTPException(
+            413, f"Refusing to open a spreadsheet that expands to "
+                 f"{expanded // (1024 * 1024)} MB.")
+    if len(data) and expanded / max(len(data), 1) > MAX_EXPANSION_RATIO:
+        raise HTTPException(400, "Refusing a spreadsheet with an implausible "
+                                 "compression ratio (possible zip bomb).")
+
     try:
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as e:
@@ -802,10 +854,24 @@ async def convert_xlsx(file: UploadFile = File(...)):
     out = io.StringIO()
     writer = csv.writer(out)
     sheets = wb.worksheets
+    cells = 0
+    deadline = time.time() + MAX_PARSE_SECONDS
     for idx, ws in enumerate(sheets):
         if len(sheets) > 1:
             out.write(f"# --- Sheet: {ws.title} ---\n")
         for row in ws.iter_rows(values_only=True):
+            # Streaming parse: the guards have to live in the loop, because a
+            # crafted sheet reports a small size and then yields forever.
+            cells += len(row)
+            if cells > MAX_CELLS:
+                wb.close()
+                raise HTTPException(
+                    413, f"Spreadsheet has more than {MAX_CELLS:,} cells.")
+            if time.time() > deadline:
+                wb.close()
+                raise HTTPException(
+                    413, "Spreadsheet took too long to read; convert it to CSV "
+                         "and paste that instead.")
             if all(c is None for c in row):
                 continue   # skip fully-empty rows
             writer.writerow(["" if c is None else c for c in row])
@@ -830,7 +896,7 @@ CONVERSATIONS: dict = {}
 # whole point). Each entry is appended to AI_REQUESTS_FILE as one JSON line,
 # so there is a permanent on-disk audit trail to verify that no customer data
 # ever left the machine. The in-memory deque feeds the Requests tab.
-AI_REQUESTS_FILE = os.path.join(APP_DIR, "ai_requests.jsonl")
+AI_REQUESTS_FILE = usage.LOG_FILE
 REQUEST_LOG: deque = deque(maxlen=200)
 _REQUEST_SEQ = {"n": 0}
 
@@ -843,7 +909,10 @@ def _log_request(kind: str, provider: str, model: str, system: str,
     _REQUEST_SEQ["n"] += 1
     entry = {
         "seq": _REQUEST_SEQ["n"],
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # ISO-8601 with the UTC offset. An audit trail read on another machine,
+        # in another timezone, or after a DST change has to be unambiguous —
+        # a bare local "14:05" is not evidence of anything.
+        "time": datetime.now().astimezone().isoformat(timespec="seconds"),
         "kind": kind,                       # analyze | follow-up | test
         "provider": provider,
         "model": model,
@@ -1210,6 +1279,23 @@ def chat_end(req: EndConversationRequest):
     the opening analysis to this moment."""
     CONVERSATIONS.pop(req.conversation_id, None)
     return {"ok": True, "cost": usage.conversation(req.conversation_id)}
+
+
+@app.get("/healthz")
+def healthz():
+    """Liveness + where this instance keeps its state. The CLI uses `pid` to
+    make sure it is talking to (and stopping) the server it started, rather
+    than whatever else happens to hold the port."""
+    return {
+        "ok": True,
+        "app": "log-masker",
+        "version": VERSION,
+        "pid": os.getpid(),
+        "platform": sys.platform,
+        "python": sys.version.split()[0],
+        "secret_backend": keystore.backend(),
+        **paths.describe(),
+    }
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
