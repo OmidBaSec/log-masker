@@ -217,7 +217,12 @@ def test_host_parsing_variants():
     check("surrounding whitespace is tolerated", ok(" 127.0.0.1:8888 "))
     check("bare ::1 without brackets is accepted", ok("::1"))
     check("fully expanded IPv6 loopback is accepted", ok("[0:0:0:0:0:0:0:1]:8888"))
+    # CPython only started calling IPv4-mapped IPv6 addresses loopback in 3.13,
+    # so guard.py unwraps the mapping itself: 3.11 and 3.13 must agree here.
     check("IPv4-mapped IPv6 loopback is accepted", ok("[::ffff:127.0.0.1]:8888"))
+    check("...on every Python version", guard._is_loopback_address("::ffff:127.0.0.1"))
+    check("an IPv4-mapped PUBLIC address is still refused",
+          not ok("[::ffff:8.8.8.8]:8888"))
     check("a trailing dot is not treated as loopback", not ok("127.0.0.1.:8888"))
     check("userinfo trick is refused", not ok("127.0.0.1@evil.example"))
     check("an empty host is refused", not ok(""))

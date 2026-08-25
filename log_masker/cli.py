@@ -87,9 +87,16 @@ def running() -> tuple:
 def _free_port(port: int) -> bool:
     import socket
     with socket.socket() as s:
-        # Match how uvicorn binds: without SO_REUSEADDR a socket still in
-        # TIME_WAIT from the instance we just stopped looks like a busy port.
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if IS_WINDOWS:
+            # SO_REUSEADDR means the opposite thing here: on Windows it lets a
+            # second socket bind a port another process already holds, so the
+            # probe would call every busy port free. SO_EXCLUSIVEADDRUSE gives
+            # the POSIX meaning.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            # Without this, a socket still in TIME_WAIT from the instance we
+            # just stopped looks like a busy port.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((HOST, port))
             return True

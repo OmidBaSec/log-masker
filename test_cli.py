@@ -114,6 +114,9 @@ def test_stop_never_kills_a_stranger():
                   "Not running" in r.stdout)
             check("the stranger is still alive", victim.poll() is None)
 
+            # On Windows, SO_REUSEADDR lets a second socket bind a port that
+            # another process already holds, so a probe written for POSIX calls
+            # every busy port free. cli.py uses SO_EXCLUSIVEADDRUSE there.
             r = cli("start", "--port", str(PORT), data_dir=data)
             check("start refuses to fight for a busy port",
                   "busy" in r.stdout.lower())

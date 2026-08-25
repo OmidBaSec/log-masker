@@ -74,6 +74,22 @@ def _hostname(value: str) -> str:
     return value
 
 
+def _is_loopback_address(host: str) -> bool:
+    """Whether `host` is a loopback IP literal.
+
+    Not simply `ip_address(host).is_loopback`: CPython only began reporting
+    IPv4-mapped IPv6 addresses (``::ffff:127.0.0.1``) as loopback in 3.13, so
+    leaning on the stdlib would have 3.11 and 3.13 disagree about who may reach
+    this server. Unwrap the mapping ourselves and get one answer everywhere.
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return mapped.is_loopback if mapped is not None else addr.is_loopback
+
+
 def is_local_host(value: str, allowed: Optional[Iterable[str]] = None) -> bool:
     """True when `value` names this machine (or an explicitly allowed host)."""
     host = _hostname(value)
@@ -83,10 +99,7 @@ def is_local_host(value: str, allowed: Optional[Iterable[str]] = None) -> bool:
         return True
     if host in (set(allowed) if allowed else _extra_hosts()):
         return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+    return _is_loopback_address(host)
 
 
 def _netloc(value: str) -> str:
@@ -117,10 +130,7 @@ def _is_loopback_bind(host: str) -> bool:
         return True                       # uvicorn's own default is 127.0.0.1
     if host in ("localhost", "127.0.0.1", "::1"):
         return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+    return _is_loopback_address(host)
 
 
 def check(method: str, headers) -> Optional[str]:
