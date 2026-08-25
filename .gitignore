@@ -33,6 +33,7 @@ m365_token_cache.json
 
 # Runtime
 *.log
+!sample_logs/*.log
 *.pid
 *.port
 

@@ -1,0 +1,9 @@
+Jun  9 10:14:02 bastion sshd[14201]: Failed password for invalid user admin from 203.0.113.45 port 49152 ssh2
+Jun  9 10:14:05 bastion sshd[14203]: Failed password for invalid user oracle from 203.0.113.45 port 49154 ssh2
+Jun  9 10:14:08 bastion sshd[14205]: Failed password for invalid user test from 203.0.113.45 port 49156 ssh2
+Jun  9 10:14:12 bastion sshd[14207]: Failed password for root from 203.0.113.45 port 49158 ssh2
+Jun  9 10:14:15 bastion sshd[14209]: Failed password for j.smith from 203.0.113.45 port 49160 ssh2
+Jun  9 10:14:22 bastion sshd[14212]: Accepted password for j.smith from 203.0.113.45 port 49162 ssh2
+Jun  9 10:14:22 bastion sshd[14212]: pam_unix(sshd:session): session opened for user j.smith by (uid=0)
+Jun  9 10:15:01 bastion sudo[14250]: j.smith : TTY=pts/0 ; PWD=/home/j.smith ; USER=root ; COMMAND=/bin/bash
+Jun  9 10:15:01 bastion sudo[14250]: pam_unix(sudo:session): session opened for user root by j.smith(uid=0)
