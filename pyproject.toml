@@ -40,10 +40,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/OmidBaSec/playground/tree/main/log_masker_app"
-Source = "https://github.com/OmidBaSec/playground"
-Issues = "https://github.com/OmidBaSec/playground/issues"
-Changelog = "https://github.com/OmidBaSec/playground/blob/main/log_masker_app/CHANGELOG.md"
+Homepage = "https://github.com/OmidBaSec/log-masker"
+Source = "https://github.com/OmidBaSec/log-masker"
+Issues = "https://github.com/OmidBaSec/log-masker/issues"
+Changelog = "https://github.com/OmidBaSec/log-masker/blob/main/CHANGELOG.md"
 
 [project.scripts]
 log-masker = "log_masker.cli:main"

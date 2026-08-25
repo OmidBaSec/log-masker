@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# OS files
+.DS_Store
+._*
+Thumbs.db
+
+# Local state — never commit, may contain customer-derived data
+entity_vault.enc
+entity_vault.enc.unreadable-*
+ai_requests.jsonl
+custom_store.json
+custom_patterns.json
+builtin_overrides.json
+templates_store.json
+workspaces.json
+app_config.json
+pricing.json
+secrets.enc
+master.key
+m365_token_cache.json
+
+# Runtime
+*.log
+*.pid
+*.port
+
+# Secrets
+.env
+.env.*
+credentials.json
+token.pickle
+
+# Tooling
+.claude/

@@ -10,8 +10,8 @@ Python **3.11 or newer** (3.9 and 3.10 cannot install the patched versions of
 some dependencies).
 
 ```bash
-git clone https://github.com/OmidBaSec/playground.git
-cd playground/log_masker_app
+git clone https://github.com/OmidBaSec/log-masker.git
+cd log-masker
 python3 -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.lock
 python cli.py start --open

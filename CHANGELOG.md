@@ -58,5 +58,5 @@ private, so this entry describes the state rather than the diff.
   the README and `SECURITY.md`. Masking is best-effort and pattern-based; the
   audit log evidences what was sent rather than proving nothing leaked.
 
-[Unreleased]: https://github.com/OmidBaSec/playground/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/OmidBaSec/playground/releases/tag/v0.9.0
+[Unreleased]: https://github.com/OmidBaSec/log-masker/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/OmidBaSec/log-masker/releases/tag/v0.9.0

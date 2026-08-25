@@ -1,0 +1,90 @@
+name: CI
+
+# The whole point of this workflow is that "it runs on macOS, Windows and Linux"
+# stays true. Everything below is dependency-free: the suites are plain scripts.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      # Keyring has no backend on a headless Linux runner — which is exactly
+      # the situation keystore.py's encrypted-file tier exists for, so this
+      # matrix leg is a real test of it rather than a nuisance.
+      - name: Run the test suites
+        env:
+          LOGMASKER_DATA_DIR: ${{ runner.temp }}/logmasker-data
+        run: |
+          python test_masker.py
+          python test_vault.py
+          python test_providers.py
+          python test_credits.py
+          python test_security.py
+          python test_cli.py
+
+      - name: Frontend decoding tests
+        run: node test_frontend.js
+
+      - name: Packaging — build a wheel and run the installed console script
+        if: matrix.python == '3.13'
+        env:
+          LOGMASKER_DATA_DIR: ${{ runner.temp }}/logmasker-pkg
+        run: |
+          python -m pip install build
+          python -m build --wheel --outdir dist
+          pip install dist/*.whl
+          log-masker where
+          log-masker start --port 8899
+          log-masker status
+          log-masker stop
+        shell: bash
+
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install -r requirements.lock
+          # Audit the installed environment: `-r` builds an isolated venv with
+          # ensurepip, which some standalone interpreters do not ship.
+          pip-audit --progress-spinner off
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # gitleaks needs the whole history
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

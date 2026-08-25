@@ -24,15 +24,15 @@ The attack pattern survives; the identities do not. Works with Claude, ChatGPT,
 Gemini, Azure OpenAI, M365 Copilot, or a local model via Ollama — where even the
 masked text stays on your hardware.
 
-[![CI](https://github.com/OmidBaSec/playground/actions/workflows/log-masker-ci.yml/badge.svg)](https://github.com/OmidBaSec/playground/actions/workflows/log-masker-ci.yml)
+[![CI](https://github.com/OmidBaSec/log-masker/actions/workflows/ci.yml/badge.svg)](https://github.com/OmidBaSec/log-masker/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
 ## Try it in 30 seconds — no API key needed
 
 ```bash
-git clone https://github.com/OmidBaSec/playground.git
-cd playground/log_masker_app
+git clone https://github.com/OmidBaSec/log-masker.git
+cd log-masker
 python3 -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements.lock
 python -m log_masker.cli start --open
