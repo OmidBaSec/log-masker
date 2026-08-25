@@ -25,7 +25,7 @@ import os
 import stat
 from typing import Dict, Optional
 
-import paths
+from log_masker import paths
 
 SERVICE = "log_masker"
 SECRETS_FILE = "secrets.enc"

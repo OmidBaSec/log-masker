@@ -15,5 +15,5 @@ if exist ".venv\Scripts\python.exe" (
     where py >nul 2>&1 && (set "PYTHON=py -3") || (set "PYTHON=python")
 )
 
-%PYTHON% cli.py %*
+%PYTHON% -m log_masker.cli %*
 exit /b %ERRORLEVEL%

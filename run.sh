@@ -29,7 +29,7 @@ fi
 # No arguments: let cli.py print its usage. (Expanding an empty array under
 # `set -u` is an error on the bash 3.2 that macOS still ships.)
 if [[ $# -eq 0 ]]; then
-  exec "$PYTHON" cli.py
+  exec "$PYTHON" -m log_masker.cli
 fi
 
 # PORT=9000 ./run.sh start  ->  cli.py start --port 9000
@@ -38,4 +38,4 @@ if [[ "$1" == "start" || "$1" == "restart" ]] && [[ -n "${PORT:-}" ]]; then
   args+=(--port "$PORT")
 fi
 
-exec "$PYTHON" cli.py "${args[@]}"
+exec "$PYTHON" -m log_masker.cli "${args[@]}"

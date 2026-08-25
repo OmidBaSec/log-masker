@@ -32,8 +32,8 @@ if (($args.Count -gt 0) -and ($args[0] -in @("start", "restart")) -and $env:PORT
 }
 
 if ($PyArgs) {
-    & $Python @PyArgs cli.py @CliArgs
+    & $Python @PyArgs -m log_masker.cli @CliArgs
 } else {
-    & $Python cli.py @CliArgs
+    & $Python -m log_masker.cli @CliArgs
 }
 exit $LASTEXITCODE

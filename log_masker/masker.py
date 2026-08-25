@@ -16,7 +16,7 @@ import os
 import re
 from typing import Dict, List, Tuple
 
-import paths
+from log_masker import paths
 
 # ---------------------------------------------------------------------------
 # Detection patterns, ordered from most specific to least specific.

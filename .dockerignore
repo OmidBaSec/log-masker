@@ -1,0 +1,27 @@
+# Never bake local state or credentials into an image.
+.venv*/
+__pycache__/
+*.pyc
+ai_requests.jsonl
+entity_vault.enc*
+app_config.json
+custom_store.json
+custom_patterns.json
+builtin_overrides.json
+templates_store.json
+pricing.json
+secrets.enc
+master.key
+m365_token_cache.json
+app.log
+app.pid
+app.port
+.git/
+.github/
+test_*.py
+test_*.js
+sample_logs/
+*.md
+build/
+dist/
+*.egg-info/

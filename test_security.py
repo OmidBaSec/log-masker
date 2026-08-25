@@ -9,9 +9,9 @@ location rules. No network, no real data directory.
 import os
 import tempfile
 
-import guard
-import keystore
-import paths
+from log_masker import guard
+from log_masker import keystore
+from log_masker import paths
 
 
 def check(name, cond):

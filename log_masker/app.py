@@ -34,19 +34,19 @@ from fastapi.responses import (HTMLResponse, FileResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import guard
-import keystore
-import masker
-import paths
-import providers
-import m365
-import templates
-import verdict as verdict_mod
-import leakguard
-import store
-import vault
-import pricing
-import usage
+from log_masker import guard
+from log_masker import keystore
+from log_masker import masker
+from log_masker import paths
+from log_masker import providers
+from log_masker import m365
+from log_masker import templates
+from log_masker import verdict as verdict_mod
+from log_masker import leakguard
+from log_masker import store
+from log_masker import vault
+from log_masker import pricing
+from log_masker import usage
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")

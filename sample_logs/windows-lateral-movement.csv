@@ -1,0 +1,8 @@
+TimeCreated,EventID,Computer,SubjectUserName,TargetUserName,LogonType,IpAddress,ProcessName
+2026-06-09T11:02:13+02:00,4624,WS07.acme.local,-,j.smith,10,10.4.2.19,C:\Windows\System32\winlogon.exe
+2026-06-09T11:04:55+02:00,4648,WS07.acme.local,j.smith,svc_backup,9,10.4.2.19,C:\Windows\System32\runas.exe
+2026-06-09T11:05:02+02:00,4624,SRV-FILE-02.acme.local,-,svc_backup,3,10.4.2.19,-
+2026-06-09T11:05:31+02:00,7045,SRV-FILE-02.acme.local,svc_backup,-,-,10.4.2.19,C:\Windows\Temp\psexesvc.exe
+2026-06-09T11:06:10+02:00,4624,SRV-DB-01.acme.local,-,svc_backup,3,10.4.2.30,-
+2026-06-09T11:07:44+02:00,4672,SRV-DB-01.acme.local,-,svc_backup,-,10.4.2.30,-
+2026-06-09T11:09:02+02:00,4688,SRV-DB-01.acme.local,svc_backup,-,-,10.4.2.30,C:\Windows\System32\cmd.exe

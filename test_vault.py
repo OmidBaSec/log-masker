@@ -9,8 +9,8 @@ import tempfile
 
 from cryptography.fernet import Fernet
 
-import masker
-import vault
+from log_masker import masker
+from log_masker import vault
 
 ALL = ["identities", "network", "secrets"]
 KEY = Fernet.generate_key().decode()
@@ -158,7 +158,7 @@ def test_app_analyze_integration():
     known entity reuses its placeholder and gets cross-incident context in
     the system prompt — statistics only, never the real value."""
     import json
-    import app as appmod
+    from log_masker import app as appmod
 
     fresh("app")
     try:

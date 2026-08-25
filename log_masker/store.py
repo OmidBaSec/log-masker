@@ -12,7 +12,7 @@ import json
 import os
 from typing import Dict, List
 
-import paths
+from log_masker import paths
 
 STORE_FILE = paths.data_file("custom_store.json")
 LEGACY_PATTERNS_FILE = paths.data_file("custom_patterns.json")

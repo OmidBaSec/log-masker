@@ -25,8 +25,8 @@ import os
 from datetime import datetime
 from typing import Dict, Optional
 
-import paths
-import pricing
+from log_masker import paths
+from log_masker import pricing
 
 LOG_FILE = paths.data_file("ai_requests.jsonl")
 

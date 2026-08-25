@@ -3,13 +3,13 @@
 import os
 import tempfile
 
-import masker
+from log_masker import masker
 
 # The app-level tests below (analyze/chat) would otherwise write their test
 # entities into the REAL entity vault — point it at a throwaway file first.
 try:
     from cryptography.fernet import Fernet
-    import vault
+    from log_masker import vault
     vault.configure(os.path.join(tempfile.mkdtemp(prefix="masker_test_"),
                                  "vault.enc"),
                     Fernet.generate_key().decode())
@@ -637,7 +637,7 @@ def test_builtin_overrides():
 
 
 def test_template_library():
-    import templates as tpl
+    from log_masker import templates as tpl
     lib = tpl.list_templates()
     check("templates present", len(lib) >= 12)
     # Every template carries a MITRE tactic + technique id.
@@ -650,7 +650,7 @@ def test_template_library():
 
 
 def test_template_suggestion():
-    import templates as tpl
+    from log_masker import templates as tpl
     cases = {
         "brute_force": "sshd: Failed password for invalid user admin from 1.2.3.4\n"
                        "Failed password for root from 1.2.3.4\naccount lockout",
@@ -673,7 +673,7 @@ def test_template_suggestion():
 
 def test_template_editing():
     import os
-    import templates as tpl
+    from log_masker import templates as tpl
     backup = None
     if os.path.exists(tpl.STORE_FILE):
         with open(tpl.STORE_FILE, encoding="utf-8") as f:
@@ -734,7 +734,7 @@ def test_template_editing():
 
 def test_verdict_parsing():
     import json
-    import verdict as v
+    from log_masker import verdict as v
     resp = (
         "The source [IP_1] failed 412 logons against [USER_1] then succeeded.\n\n"
         "```json\n"
@@ -773,7 +773,7 @@ def test_verdict_parsing():
 
 
 def test_verdict_robustness():
-    import verdict as v
+    from log_masker import verdict as v
     p, none = v.split_response("Just prose, no structured verdict.")
     check("no verdict -> None", none is None)
     check("prose unchanged", p == "Just prose, no structured verdict.")
@@ -788,7 +788,7 @@ def test_verdict_robustness():
 
 
 def test_leakguard_detectors():
-    import leakguard as lg
+    from log_masker import leakguard as lg
     # A typical fully-masked output must be silent (no alert fatigue).
     clean = ("Jun 10 14:23:01 [HOST_1] %ASA-6-605005: Login from [IP_1]/51122 "
              "for user '[USER_1]'\nUTF-8 CVE-2024-1234 T1110 SHA-256 "
@@ -824,8 +824,8 @@ def test_leakguard_detectors():
 def test_leakguard_gate():
     """The /analyze gate blocks when masking is broken (e.g. a bad regex
     override), and proceeds + audits once acknowledged."""
-    import app as appmod
-    import masker as mk
+    from log_masker import app as appmod
+    from log_masker import masker as mk
     import os
 
     real_call, real_key = appmod.providers.call, appmod.get_api_key
@@ -903,8 +903,8 @@ def test_custom_store():
     """The global custom-terms / saved-patterns store persists and feeds
     masking, and those saved terms apply automatically at analyse time."""
     import os
-    import app as appmod
-    import store
+    from log_masker import app as appmod
+    from log_masker import store
     # Back up the store and the legacy files migration would read from, so the
     # empty-start assertion is not satisfied by pre-existing user data.
     backups = {f: _backup_file(f) for f in (
@@ -950,7 +950,7 @@ def test_custom_store():
 def test_system_prompt():
     """The system prompt is editable + persisted, and the per-run toggle
     controls whether it (and the saved override) are sent to the AI."""
-    import app as appmod
+    from log_masker import app as appmod
     backup = _backup_file(appmod.CONFIG_FILE)
     captured = {}
 

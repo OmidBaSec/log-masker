@@ -9,9 +9,9 @@ import json
 import os
 import tempfile
 
-import pricing
-import providers
-import usage
+from log_masker import pricing
+from log_masker import providers
+from log_masker import usage
 
 
 def check(name, cond):

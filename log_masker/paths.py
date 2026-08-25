@@ -4,9 +4,9 @@ Where Log Masker keeps its data — on macOS, Windows and Linux alike.
 Resolution order, first match wins:
 
   1. ``LOGMASKER_DATA_DIR``     — explicit; what Docker and portable installs set.
-  2. The directory holding this code, **if it already contains app data** —
-     so an existing side-by-side install keeps working exactly where it is,
-     and `python cli.py` from a checkout stays self-contained.
+  2. The directory holding this code — or the checkout root above it — **if it
+     already contains app data**, so an existing install keeps working exactly
+     where it is rather than being silently relocated.
   3. The per-user application directory for this OS:
        macOS    ~/Library/Application Support/LogMasker
        Windows  %APPDATA%\\LogMasker
@@ -26,6 +26,9 @@ APP_NAME = "LogMasker"
 ENV_VAR = "LOGMASKER_DATA_DIR"
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+# The checkout root: one level up from the package, where a pre-packaging
+# install kept its vault and audit log.
+PROJECT_DIR = os.path.dirname(CODE_DIR)
 
 # Files that mark a directory as holding a Log Masker installation's data.
 # (The audit log and the vault are the two that must never be orphaned.)
@@ -71,7 +74,11 @@ def data_dir() -> str:
         if env:
             resolved = os.path.abspath(os.path.expanduser(env))
         elif _has_data(CODE_DIR):
-            resolved = CODE_DIR          # existing side-by-side install
+            resolved = CODE_DIR          # data sitting next to the modules
+        elif _has_data(PROJECT_DIR):
+            # The package moved a directory deeper when it became installable;
+            # an install that predates that keeps its data where it left it.
+            resolved = PROJECT_DIR
         else:
             resolved = _user_data_dir()
         _ensure_usable(resolved)

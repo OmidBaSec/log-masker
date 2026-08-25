@@ -1,0 +1,52 @@
+# Log Masker, optionally with a local model so nothing reaches a cloud provider.
+#
+#   docker compose up -d                  app only
+#   docker compose --profile local up -d  app + Ollama
+#
+# The port is published on 127.0.0.1 deliberately: this app has no login, so
+# anything that can reach it is treated as you. To share it, put an
+# authenticating reverse proxy in front and change the binding yourself.
+
+services:
+  log-masker:
+    build: .
+    image: log-masker:latest
+    ports:
+      - "127.0.0.1:8888:8888"
+    volumes:
+      - logmasker-data:/data
+    environment:
+      # Generate once and keep it in your secret manager:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # Without it, the key is written to master.key on the volume instead.
+      LOGMASKER_MASTER_KEY: ${LOGMASKER_MASTER_KEY:-}
+      # Provider keys can come from the environment instead of the UI.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      # Name every host clients will use, or the request guard refuses them.
+      LOGMASKER_ALLOWED_HOSTS: ${LOGMASKER_ALLOWED_HOSTS:-localhost}
+    restart: unless-stopped
+    # Nothing in this app needs to write outside its volume.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # Optional: keeps even the masked text on your own hardware.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    # In the app's settings set the Ollama endpoint to http://ollama:11434,
+    # then: docker compose exec ollama ollama pull llama3.1
+
+volumes:
+  logmasker-data:
+  ollama-models:

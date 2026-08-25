@@ -19,7 +19,7 @@ import os
 import re
 from typing import Dict, Optional, Tuple
 
-import paths
+from log_masker import paths
 
 RATES_FILE = paths.data_file("pricing.json")
 

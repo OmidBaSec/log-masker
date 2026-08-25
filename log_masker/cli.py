@@ -3,12 +3,9 @@
 Log Masker launcher — one command that behaves the same on macOS, Windows and
 Linux.
 
-    python cli.py start [--port 8888] [--open]
-    python cli.py stop
-    python cli.py status
-    python cli.py logs [-n 50] [-f]
-    python cli.py url
-    python cli.py where          # data directory + secret backend
+    log-masker start [--port 8888] [--open]     (installed console script)
+    python -m log_masker.cli start              (from a checkout)
+    ... stop | restart | status | logs [-n 50] [-f] | url | where
 
 The old run.sh needed bash, nohup, kill and lsof; none of those exist on a
 stock Windows box. This uses only the standard library, and identifies the
@@ -28,14 +25,17 @@ import time
 import urllib.error
 import urllib.request
 
-import paths
+from log_masker import paths
 
 DEFAULT_PORT = 8888
 HOST = "127.0.0.1"
 PID_FILE = "app.pid"
 PORT_FILE = "app.port"
 LOG_FILE = "app.log"
-CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+# uvicorn must import `log_masker.app`, so it runs from the directory that
+# holds the package (irrelevant once installed, essential from a checkout).
+CODE_DIR = os.path.dirname(PACKAGE_DIR)
 IS_WINDOWS = os.name == "nt"
 
 
@@ -118,7 +118,7 @@ def cmd_start(args) -> int:
 
     log_path = paths.data_file(LOG_FILE)
     log = open(log_path, "a", encoding="utf-8")
-    cmd = [sys.executable, "-m", "uvicorn", "app:app",
+    cmd = [sys.executable, "-m", "uvicorn", "log_masker.app:app",
            "--host", HOST, "--port", str(port)]
 
     # Detach so the server outlives this shell — the flags differ per platform,
@@ -242,7 +242,7 @@ def cmd_where(args) -> int:
     print(f"                ({info['source']})")
     print(f"code directory  {info['code_dir']}")
     try:
-        import keystore
+        from log_masker import keystore
         print(f"secret storage  {keystore.backend()}")
     except Exception as e:                      # noqa: BLE001 - informational
         print(f"secret storage  unavailable ({e})")

@@ -24,7 +24,7 @@ from typing import Dict, Optional, Tuple
 
 import msal
 
-import paths
+from log_masker import paths
 
 CACHE_FILE = paths.data_file("m365_token_cache.json")
 

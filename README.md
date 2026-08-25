@@ -1,10 +1,48 @@
-# Log Masker — Safe AI Log Analysis
+# Log Masker — safe AI log analysis
 
-A local web app that lets you send raw logs to a public AI for security analysis
-**without leaking customer data**. Sensitive values (usernames, emails, domains,
-hostnames, IPs, MAC addresses, API keys, tokens, UUIDs, account numbers…) are
-masked **locally** before anything leaves your machine. The AI analyses the
-masked logs, and the real values are restored **locally** in the response.
+**Get an AI to analyse your logs without handing it your customers' data.**
+Sensitive values are replaced with placeholders on your own machine before
+anything is sent, and the real values are put back locally in the answer.
+
+```
+  2026-06-09 sshd: Failed password for jsmith from 203.0.113.47
+                              │
+                              │  masked locally — this is what leaves
+                              ▼
+  2026-06-09 sshd: Failed password for [USER_3] from [IP_1]
+                              │
+                              │  the AI answers about placeholders
+                              ▼
+  "[IP_1] made 6 failed attempts against [USER_3] before succeeding…"
+                              │
+                              │  restored locally — this is what you read
+                              ▼
+  "203.0.113.47 made 6 failed attempts against jsmith before succeeding…"
+```
+
+The attack pattern survives; the identities do not. Works with Claude, ChatGPT,
+Gemini, Azure OpenAI, M365 Copilot, or a local model via Ollama — where even the
+masked text stays on your hardware.
+
+[![CI](https://github.com/OmidBaSec/playground/actions/workflows/log-masker-ci.yml/badge.svg)](https://github.com/OmidBaSec/playground/actions/workflows/log-masker-ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
+## Try it in 30 seconds — no API key needed
+
+```bash
+git clone https://github.com/OmidBaSec/playground.git
+cd playground/log_masker_app
+python3 -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -r requirements.lock
+python -m log_masker.cli start --open
+```
+
+Paste [`sample_logs/ssh-brute-force.log`](sample_logs/) into the workspace and
+press **Preview masking**. No provider is contacted, no key is required, and the
+*Masked data* tab shows you exactly what would have been sent. Only when you
+press **Mask & Analyse** does anything leave the machine — and only the masked
+text.
 
 ## What this tool does and does not guarantee
 
@@ -245,6 +283,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.lock     # exact, resolved versions
 ```
+
+Or install it as a command:
+
+```bash
+pip install .            # then: log-masker start --open
+```
 </details>
 
 <details>
@@ -287,11 +331,13 @@ saved key per provider.
 The launcher is pure Python and behaves the same on macOS, Windows and Linux:
 
 ```bash
-python cli.py start --open     # background, then open a browser
-python cli.py status           # version, data directory, secret backend
-python cli.py logs -f          # follow the server log
-python cli.py stop
-python cli.py where            # where data and secrets live on this OS
+log-masker start --open           # if installed with pip
+python -m log_masker.cli start    # from a checkout — same commands
+
+log-masker status                 # version, data directory, secret backend
+log-masker logs -f                # follow the server log
+log-masker stop
+log-masker where                  # where data and secrets live on this OS
 ```
 
 Shell wrappers are provided for habit and for double-clicking — they all just
@@ -306,7 +352,7 @@ call `cli.py`:
 For development, run the server in the foreground:
 
 ```bash
-uvicorn app:app --reload --port 8000    # then open http://127.0.0.1:8000
+uvicorn log_masker.app:app --reload --port 8000   # http://127.0.0.1:8000
 ```
 
 **It only listens on `127.0.0.1`, and it refuses to start on any other
@@ -314,6 +360,26 @@ interface.** There is no login: anything that can reach the port can read the
 entity vault and spend your API credit. To expose it deliberately, put an
 authenticating proxy in front and set `LOGMASKER_ALLOW_REMOTE=1` plus
 `LOGMASKER_ALLOWED_HOSTS=<your hostname>`.
+
+### Docker
+
+```bash
+docker compose up -d                    # http://127.0.0.1:8888
+docker compose --profile local up -d    # ...plus Ollama, for a fully local pipeline
+```
+
+The image runs as an unprivileged user with a read-only root filesystem and
+keeps state in a named volume. A container has no OS keychain, so secrets go to
+the encrypted-file tier — set `LOGMASKER_MASTER_KEY` from your secret manager so
+the key never lands on the volume:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+The compose file publishes the port on `127.0.0.1` on purpose. **There is no
+login.** To share an instance, put an authenticating proxy in front of it and
+set `LOGMASKER_ALLOWED_HOSTS` to the hostname clients use.
 
 ### Where your data lives
 
@@ -550,3 +616,7 @@ python test_security.py    # request guard, data paths, secret storage
 python test_cli.py         # launcher: start/stop/status on this OS
 node   test_frontend.js    # log-file encoding detection (browser-side)
 ```
+
+All of them run from `log_masker_app/` with no test runner and no plugins.
+The CI matrix runs them on macOS, Windows and Linux against Python 3.11 and
+3.13.

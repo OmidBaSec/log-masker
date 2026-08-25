@@ -6,7 +6,7 @@ Network calls are stubbed — no provider (local or cloud) is contacted.
 
 import json
 
-import providers
+from log_masker import providers
 
 
 def check(name, cond):

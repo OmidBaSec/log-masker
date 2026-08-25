@@ -28,8 +28,8 @@ from collections import Counter
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
-import keystore
-import paths
+from log_masker import keystore
+from log_masker import paths
 
 VAULT_FILE = paths.data_file("entity_vault.enc")
 KEYRING_ENTRY = "vault_key"

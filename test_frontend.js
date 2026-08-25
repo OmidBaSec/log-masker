@@ -9,11 +9,11 @@
 
 var LogEncoding;
 if (typeof require !== "undefined") {
-    LogEncoding = require("./static/encoding.js");
+    LogEncoding = require("./log_masker/static/encoding.js");
 } else {
     // JavaScriptCore: no module system, so evaluate the file into this scope.
     globalThis.module = undefined;
-    eval(readFile("./static/encoding.js"));   // eslint-disable-line no-eval
+    eval(readFile("./log_masker/static/encoding.js"));   // eslint-disable-line no-eval
     LogEncoding = globalThis.LogEncoding;
     if (typeof TextDecoder === "undefined") {
         globalThis.TextDecoder = function (encoding) {

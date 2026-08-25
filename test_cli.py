@@ -1,4 +1,4 @@
-"""Checks for the cross-platform launcher (cli.py).
+"""Checks for the cross-platform launcher (log_masker/cli.py).
 Run: python test_cli.py
 
 The launcher is the one piece of this app that behaves differently per OS, so
@@ -34,9 +34,11 @@ def cli(*args, data_dir=None, env=None, timeout=60):
     environ.pop("PORT", None)
     if env:
         environ.update(env)
-    return subprocess.run([sys.executable, "cli.py", *args], cwd=HERE,
-                          capture_output=True, text=True, timeout=timeout,
-                          env=environ)
+    # `-m` rather than a path: that is how the launcher is invoked from a
+    # checkout now that the modules live in a package.
+    return subprocess.run([sys.executable, "-m", "log_masker.cli", *args],
+                          cwd=HERE, capture_output=True, text=True,
+                          timeout=timeout, env=environ)
 
 
 def healthz(port, timeout=1.0):
@@ -168,7 +170,7 @@ def test_refuses_to_expose_the_network():
         env["LOGMASKER_DATA_DIR"] = data
         env["UVICORN_HOST"] = "0.0.0.0"
         env.pop("LOGMASKER_ALLOW_REMOTE", None)
-        r = subprocess.run([sys.executable, "-c", "import app"], cwd=HERE,
+        r = subprocess.run([sys.executable, "-c", "import log_masker.app"], cwd=HERE,
                            capture_output=True, text=True, env=env, timeout=60)
         check("importing the app with UVICORN_HOST=0.0.0.0 fails",
               r.returncode != 0)
