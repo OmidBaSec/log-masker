@@ -8,6 +8,23 @@ versions follow [Semantic Versioning][semver].
 
 ## [Unreleased]
 
+### Changed
+- **Far fewer false positives on EDR alert JSON.** A Microsoft Defender
+  incident went from 25 masked values to 14, with every remaining one genuinely
+  customer-identifying. Masking a vendor's schema namespaces, console URLs and
+  file hashes protected nobody and made the alert unreadable.
+  - File hashes under an explicit hash key are kept — a hash is the IOC. A bare
+    `hash=` still masks, because that is where credential dumps put NTLM hashes.
+  - Vendor reference ids (`detectorId`, `alertId`, `ruleId`, `correlationId`)
+    and ATT&CK ids are kept.
+  - Loopback and unspecified addresses are kept.
+  - Security-console hostnames are kept, matched exactly — never by suffix, so
+    `contoso.sharepoint.com` still masks.
+  - camelCase final labels are no longer treated as TLDs, so
+    `#microsoft.graph.security.deviceEvidence` is not a hostname.
+  - JSON-escaped Windows paths are no longer read as UNC server names, so
+    `C:\\Windows\\System32\\WindowsPowerShell` survives intact.
+
 ### Security
 - The M365 OAuth callback page escapes text that came from the identity
   provider. It renders on the app's own origin, so injected markup would have

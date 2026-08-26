@@ -50,7 +50,7 @@ Read this before pointing it at production logs.
 
 Masking is **pattern-based and best-effort**. It recognises the categories
 listed below plus the terms and regexes you add, and it is tested hard (see
-[Tests](#tests) — 522 checks, most of them masking cases). It cannot recognise
+[Tests](#tests) — 589 checks, most of them masking cases). It cannot recognise
 what it has never been taught: an internal codename, an unusual identifier
 format, a customer name written in a way no rule matches. The **pre-send leak
 guard** is an independent second pass that catches many such misses, and the
@@ -399,6 +399,33 @@ to an encrypted file in the data directory, whose master key comes from
 `LOGMASKER_MASTER_KEY` if set, otherwise a `master.key` file created with
 owner-only permissions. On a server, set `LOGMASKER_MASTER_KEY` from your secret
 manager so the key never lands on disk.
+
+## What is deliberately *not* masked
+
+Security telemetry is full of values that look sensitive and identify nobody.
+Masking them does not protect anyone — it just makes the alert unreadable and
+the AI's answer useless — so these survive into the text that is sent:
+
+* **File hashes** under an explicit hash key (`SHA256=`, `"sha1":`, `MD5=`,
+  `imphash`). A hash is the IOC: it is the thing worth looking up, and it
+  identifies a binary rather than a person. A bare `hash=` is *not* in this
+  list — that is where credential dumps put NTLM hashes, and those are masked.
+* **Vendor reference ids** — `detectorId`, `alertId`, `incidentId`, `ruleId`,
+  `correlationId`. They identify the detection, not the detected.
+* **ATT&CK technique and tactic ids** (`T1204`, `TA0006`).
+* **Loopback and unspecified addresses** — `127.0.0.1`, `::1`, `0.0.0.0`. Every
+  host is `127.0.0.1` to itself; masking it removes the fact that something was
+  local.
+* **Security-console hostnames** — `security.microsoft.com`, `portal.azure.com`,
+  `graph.microsoft.com` and similar, matched exactly. Never by suffix:
+  `contoso.sharepoint.com` names the tenant and is still masked.
+* **API and schema namespaces** — `@odata.type`,
+  `#microsoft.graph.security.deviceEvidence`, `event.kind`. A camelCase final
+  label is not a TLD.
+* **System paths and binaries** — `C:\Windows\System32\...`, `powershell.exe`.
+
+Tenant ids, Entra device ids, EDR device ids, and link-local addresses *are*
+masked: they identify the organisation or the machine.
 
 ## Log file encodings
 

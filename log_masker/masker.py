@@ -38,6 +38,14 @@ CATEGORIES = {
 _DOMAIN_ALLOWLIST = {
     "example.com", "localhost", "anthropic.com", "api.anthropic.com",
     "google.com", "microsoft.com", "github.com",
+    # Security-console and API hostnames that appear in nearly every alert
+    # payload. Exact matches only, never suffixes: "contoso.sharepoint.com"
+    # names the tenant and must still be masked.
+    "security.microsoft.com", "portal.azure.com", "graph.microsoft.com",
+    "login.microsoftonline.com", "login.microsoft.com",
+    "protection.office.com", "compliance.microsoft.com",
+    "console.aws.amazon.com", "console.cloud.google.com",
+    "attack.mitre.org", "virustotal.com", "www.virustotal.com",
 }
 
 # Common file extensions / TLD-lookalikes we do NOT want treated as domains.
@@ -47,6 +55,10 @@ _NOT_TLDS = {
     "conf", "cfg", "ini", "bak", "tmp", "gz", "zip", "tar", "jar", "war",
     "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "rtf", "msi",
     "bat", "ps1", "vbs", "lnk", "sys", "dat", "db", "mdb", "evtx", "pcap",
+    # JSON/telemetry key suffixes ("@odata.type", "event.kind"). Deliberately
+    # excludes .id and .name, which are real TLDs — over-masking is noise,
+    # under-masking is a leak.
+    "type", "kind", "value", "count", "severity", "timestamp", "verdict",
 }
 
 # Tokens that sit where a syslog hostname would but are really log levels,
@@ -295,9 +307,13 @@ def _compile_patterns():
     # 58:40:4e:ab:3d:4e (WS-FIN-07) via eth0
     p.append(("network", "HOST", re.compile(
         r"\(([A-Za-z][\w.\-]*)\) via\b")))
-    # UNC paths: \\fileserver01\share\… — masks just the server name.
+    # UNC paths: \\fileserver01\share\… — masks just the server name. A real UNC
+    # path starts a token; inside a JSON-escaped Windows path every separator
+    # is a doubled backslash ("C:\\Windows\\System32\\WindowsPowerShell"), so
+    # require that the pair is not preceded by a word character or a drive
+    # colon — otherwise every path segment looks like a file server.
     p.append(("network", "HOST", re.compile(
-        r"(?<![\\])\\\\([A-Za-z0-9][A-Za-z0-9._\-]+)(?=\\)")))
+        r"(?<![\\:\w])\\\\([A-Za-z0-9][A-Za-z0-9._\-]+)(?=\\)")))
     # Microsoft Defender for Cloud alerts.
     p.append(("network", "HOST", re.compile(
         r"(?i)\"compromised[_-]?entity\"\s*:\s*\"([^\"]+)\"")))
@@ -329,6 +345,35 @@ def _compile_patterns():
         r"[A-Za-z]{2,}\b")))
 
     return p
+
+
+# ---------------------------------------------------------------------------
+# Protected spans — matched FIRST and never masked.
+#
+# Security telemetry is full of values that look sensitive and are not: a file
+# hash is an IOC an analyst needs to keep (it is the whole question — "is this
+# binary known-bad?"), and a vendor's own detector or console URL identifies
+# Microsoft, not the customer. Masking those does not protect anyone; it just
+# makes the alert unreadable and the answer useless.
+#
+# These claim their span before any masking pattern runs, so the value survives
+# into the text that is sent. Everything here must be justified by "this cannot
+# identify the customer, their people, or their infrastructure".
+# ---------------------------------------------------------------------------
+_KEEP_PATTERNS = [
+    # File hashes under an explicit file-hash key. Deliberately NOT a bare
+    # `hash=`, which is where credential dumps put NTLM/LM hashes.
+    re.compile(r"(?i)\b(?:sha1|sha256|sha512|md5|imphash|authentihash"
+               r"|file[_-]?hash|sha256ac)\b[\"']?\s*[=:]\s*[\"']?"
+               r"([A-Fa-f0-9]{32,128})\b"),
+    # Vendor reference ids: they identify the detection, not the detected.
+    re.compile(r"(?i)\b(?:detector|alert|provider[_-]?alert|incident|rule"
+               r"|signature|policy|alert[_-]?policy|correlation|request"
+               r"|activity|operation)[_-]?id\b[\"']?\s*[=:]\s*[\"']?"
+               r"([0-9a-fA-F\-]{8,64})"),
+    # MITRE ATT&CK technique / tactic ids.
+    re.compile(r"\b(T\d{4}(?:\.\d{3})?|TA\d{4})\b"),
+]
 
 
 _DEFAULT_PATTERNS = _compile_patterns()
@@ -782,6 +827,23 @@ def _accept(label: str, value: str) -> bool:
         tld = lower.rsplit(".", 1)[-1]
         if "." in lower and tld in _NOT_TLDS:
             return False
+        # API/type namespaces: "#microsoft.graph.security.deviceEvidence".
+        # A camelCase final label is never a TLD, while "Corp.Local" (capital
+        # first letter) and "CORP.LOCAL" are ordinary Windows domains.
+        raw_tld = v.rsplit(".", 1)[-1]
+        if "." in v and any(c.isupper() for c in raw_tld[1:]) \
+                and any(c.islower() for c in raw_tld):
+            return False
+    # Loopback identifies no one — every host is 127.0.0.1 to itself — and
+    # masking it removes the very thing that says "this was local".
+    if label in ("IP", "IPV6"):
+        try:
+            import ipaddress
+            addr = ipaddress.ip_address(v.strip("[]"))
+            if addr.is_loopback or addr.is_unspecified:
+                return False
+        except ValueError:
+            pass
     # sudo logs say PWD=/home/jsmith meaning the working directory, not a
     # password; filesystem paths are handled by the profile-path patterns.
     if label == "SECRET" and v.startswith("/"):
@@ -871,6 +933,15 @@ def mask(text: str, enabled: List[str],
 
     def take(s: int, e: int) -> None:
         claimed[s:e] = b"\x01" * (e - s)
+
+    # Protected spans first: file hashes, vendor reference ids and ATT&CK ids
+    # claim their span and are never masked, so no later pattern can take them
+    # (see _KEEP_PATTERNS for why each one is safe to keep).
+    for keep in _KEEP_PATTERNS:
+        for m in keep.finditer(text):
+            ks, ke = (m.start(1), m.end(1)) if m.lastindex else (m.start(), m.end())
+            if not overlaps(ks, ke):
+                take(ks, ke)
 
     # CSV exports first: whole sensitive cells (bare usernames, network and
     # device names that no regex could anchor on) claim their spans before

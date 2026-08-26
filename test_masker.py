@@ -198,7 +198,11 @@ def test_sysmon_logs():
     check("profile path structure kept", "C:\\Users\\[USER_" in masked)
     check("unix home masked", "/home/j.doe" not in masked)
     check("builtin NT AUTHORITY SYSTEM kept", "NT AUTHORITY\\SYSTEM" in masked)
-    check("sysmon hash masked", "6E340B9C" not in masked)
+    # Reversed deliberately: a file hash is an IOC, not customer data. Masking
+    # it removed the one value an analyst (or the AI) can actually look up, and
+    # it identifies a binary rather than a person. See _KEEP_PATTERNS.
+    check("sysmon file hash kept, so it can still be looked up",
+          "6E340B9C" in masked)
     check("sysmon field labels kept", "CommandLine:" in masked)
 
 
@@ -1023,8 +1027,118 @@ def test_masking_stays_linear():
     check(f"1 MB masks in well under 10 s (took {elapsed:.2f}s)", elapsed < 10)
 
 
+def test_defender_incident_json():
+    """Microsoft Defender / Graph alert JSON. Synthetic values throughout.
+
+    This payload is mostly vendor scaffolding — schema namespaces, console
+    URLs, detector ids, file hashes — wrapped around a little customer data.
+    Masking the scaffolding does not protect anyone and makes the alert
+    unreadable, so the interesting assertions here are the ones about what
+    survives."""
+    raw = (
+        '{"id":"c0ffee11-2222-3333-4444-555555555555_1",'
+        '"detectorId":"8c19b234-81bb-4b72-b48c-1d40fffc3fa1",'
+        '"tenantId":"6e330acc-b122-4abd-b2ce-db3b7237d432",'
+        '"mitreTechniques":["T1204"],'
+        '"alertWebUrl":"https://security.microsoft.com/alerts/c0ffee11?tid=6e330acc",'
+        '"evidence":[{"@odata.type":"#microsoft.graph.security.deviceEvidence",'
+        '"mdeDeviceId":"87b085b64f716d27b80a5d2f8f1ccb0689a48700",'
+        '"deviceDnsName":"ws-fin-07.corp.example",'
+        '"hostName":"ws-fin-07","dnsDomain":"corp.example",'
+        '"lastIpAddress":"172.16.12.139","lastExternalIpAddress":"203.0.113.9",'
+        '"ipInterfaces":["172.16.12.139","fe80::ab1c:a797:90a8:477c","127.0.0.1","::1"],'
+        '"loggedOnUsers":[{"accountName":"jsmith","domainName":"CORP"}]},'
+        '{"@odata.type":"#microsoft.graph.security.userEvidence",'
+        '"userAccount":{"accountName":"jsmith","domainName":"CORP",'
+        '"userSid":"S-1-5-21-2150773522-919722172-3827648958-30601",'
+        '"userPrincipalName":"j.smith@example.org","displayName":"Smith, Jane"}},'
+        '{"@odata.type":"#microsoft.graph.security.processEvidence",'
+        '"processId":26992,"processCommandLine":"\\"powershell.exe\\" ",'
+        '"imageFile":{"sha1":"613000dc53e7ef0b048021f68dd06c101994da29",'
+        '"sha256":"7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5",'
+        '"fileName":"powershell.exe",'
+        '"filePath":"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0",'
+        '"filePublisher":"Microsoft Corporation"}}]}'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+
+    # --- customer data must go -------------------------------------------
+    check("defender: UPN masked", "j.smith@example.org" not in masked)
+    check("defender: display name masked", "Smith, Jane" not in masked)
+    check("defender: sam account masked", "jsmith" not in masked)
+    check("defender: SID masked", "S-1-5-21-2150773522" not in masked)
+    check("defender: device name masked", "ws-fin-07" not in masked)
+    check("defender: AD domain masked", "corp.example" not in masked)
+    check("defender: NetBIOS domain masked", '"CORP"' not in masked)
+    check("defender: internal IP masked", "172.16.12.139" not in masked)
+    check("defender: external IP masked", "203.0.113.9" not in masked)
+    check("defender: tenant id masked",
+          "6e330acc-b122-4abd-b2ce-db3b7237d432" not in masked)
+    check("defender: Defender device id masked",
+          "87b085b64f716d27b80a5d2f8f1ccb0689a48700" not in masked)
+
+    # --- vendor scaffolding must stay -------------------------------------
+    check("defender: sha256 kept (it is the IOC)",
+          "7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5" in masked)
+    check("defender: sha1 kept", "613000dc53e7ef0b048021f68dd06c101994da29" in masked)
+    check("defender: detector id kept (identifies the rule, not the customer)",
+          "8c19b234-81bb-4b72-b48c-1d40fffc3fa1" in masked)
+    check("defender: console hostname kept", "security.microsoft.com" in masked)
+    check("defender: Graph type namespace kept",
+          "microsoft.graph.security.deviceEvidence" in masked)
+    check("defender: odata annotation kept", "@odata.type" in masked)
+    check("defender: ATT&CK technique kept", "T1204" in masked)
+    check("defender: loopback kept", '"127.0.0.1"' in masked)
+    check("defender: IPv6 loopback kept", '"::1"' in masked)
+    check("defender: system path kept",
+          "System32" in masked and "WindowsPowerShell" in masked)
+    check("defender: binary name kept", "powershell.exe" in masked)
+
+
+def test_hash_keys_vs_credential_hashes():
+    """A file hash is an IOC and stays; a credential hash is a secret and goes.
+    The difference is the key it sits under, not the shape of the value."""
+    keep = ("SHA256=6E340B9CFFB37A989CA544E6BB780A2C78901D3FB33738768511A30617AFA01D "
+            "MD5=d41d8cd98f00b204e9800998ecf8427e")
+    masked, _ = masker.mask(keep, ALL)
+    check("sysmon SHA256= kept", "6E340B9C" in masked)
+    check("sysmon MD5= kept", "d41d8cd98f00b204e9800998ecf8427e" in masked)
+
+    creds = "user=jsmith hash=aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931"
+    masked, _ = masker.mask(creds, ALL)
+    check("a bare hash= is still treated as a credential",
+          "aad3b435b51404ee" not in masked)
+
+
+def test_loopback_is_not_customer_data():
+    raw = ("client 127.0.0.1 connected; peer ::1; server 10.4.2.19; "
+           "listener 0.0.0.0:8888")
+    masked, _ = masker.mask(raw, ALL)
+    check("IPv4 loopback kept", "127.0.0.1" in masked)
+    check("IPv6 loopback kept", "::1" in masked)
+    check("0.0.0.0 kept", "0.0.0.0" in masked)
+    check("a real internal address is still masked", "10.4.2.19" not in masked)
+
+
+def test_camelcase_namespace_is_not_a_hostname():
+    raw = ('{"@odata.type":"#microsoft.graph.security.deviceEvidence",'
+           '"event.kind":"alert","host":"dc-01.corp.local",'
+           '"domain":"CORP.LOCAL","other":"Corp.Local"}')
+    masked, _ = masker.mask(raw, ALL)
+    check("camelCase namespace kept",
+          "microsoft.graph.security.deviceEvidence" in masked)
+    check("JSON key suffix kept", "event.kind" in masked)
+    check("a real FQDN is still masked", "dc-01.corp.local" not in masked)
+    check("an all-caps AD domain is still masked", "CORP.LOCAL" not in masked)
+    check("a capitalised AD domain is still masked", "Corp.Local" not in masked)
+
+
 if __name__ == "__main__":
     test_masking_stays_linear()
+    test_defender_incident_json()
+    test_hash_keys_vs_credential_hashes()
+    test_loopback_is_not_customer_data()
+    test_camelcase_namespace_is_not_a_hostname()
     test_roundtrip()
     test_ipv6_vs_timestamp()
     test_bare_hostname_param()
