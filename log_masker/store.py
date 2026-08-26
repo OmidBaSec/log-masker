@@ -94,6 +94,10 @@ def get_patterns() -> List[Dict[str, str]]:
 
 
 def add_pattern(label: str, regex: str) -> None:
+    # Saved patterns run on every future mask, so an invalid or catastrophically
+    # backtracking one must never reach the store (see masker.validate_user_regex).
+    from log_masker import masker
+    regex = masker.validate_user_regex(regex)
     data = _load()
     pats = data.setdefault("custom_patterns", [])
     if any(p.get("regex") == regex for p in pats):

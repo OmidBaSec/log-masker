@@ -8,6 +8,22 @@ versions follow [Semantic Versioning][semver].
 
 ## [Unreleased]
 
+### Security
+- The M365 OAuth callback page escapes text that came from the identity
+  provider. It renders on the app's own origin, so injected markup would have
+  run as same-origin script with the request guard treating it as us.
+- Custom Ollama and Azure endpoints are validated before the server fetches
+  them: `http`/`https` only, and link-local, carrier-grade-NAT and cloud
+  metadata addresses are refused. Loopback stays allowed — that is where Ollama
+  runs. Matters once the app is exposed with `LOGMASKER_ALLOW_REMOTE`.
+- User-supplied regexes are rejected if they backtrack catastrophically.
+  A saved pattern runs on *every* future mask, so one bad pattern wedged every
+  analysis — and the leak guard with it — until the JSON was hand-edited. The
+  check runs out-of-process, because `re` holds the GIL while it backtracks and
+  a thread could not have been timed out.
+- The M365 token cache is created owner-only rather than chmod-ed afterwards,
+  closing the window where a refresh token sat at 0644.
+
 ## [0.9.0] — 2026-08-25
 
 First release prepared for public use. Everything before this was developed in

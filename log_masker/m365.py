@@ -66,11 +66,15 @@ def _load_cache() -> msal.SerializableTokenCache:
 
 def _save_cache(cache: msal.SerializableTokenCache) -> None:
     if cache.has_state_changed:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        # Create it owner-only from the start rather than chmod-ing afterwards:
+        # this file holds a refresh token, and the default umask would leave it
+        # world-readable for the moment in between (keystore.py does the same).
+        fd = os.open(CACHE_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(cache.serialize())
         try:
-            os.chmod(CACHE_FILE, 0o600)
-        except Exception:
+            os.chmod(CACHE_FILE, 0o600)      # tighten a pre-existing file too
+        except OSError:
             pass
 
 

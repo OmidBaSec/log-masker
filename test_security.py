@@ -443,6 +443,120 @@ def test_unicode_and_large_secrets():
             paths.reset_cache()
 
 
+# ---------------------------------------------------------------------------
+# Findings from the vulnerability review
+# ---------------------------------------------------------------------------
+def test_oauth_callback_escapes_provider_text():
+    """The callback page renders text that came from the identity provider, on
+    the app's own origin — where injected script would be same-origin with the
+    API and the guard would wave it through."""
+    from log_masker import app as appmod
+    from log_masker import m365
+
+    class FakeRequest:
+        query_params = {"code": "x", "state": "y"}
+
+    real = m365.handle_callback
+    try:
+        m365.handle_callback = lambda *a, **k: (_ for _ in ()).throw(
+            m365.M365Error('<script>alert(1)</script>'))
+        page = appmod.oauth_callback(FakeRequest())
+        check("markup from the provider is escaped",
+              "<script>alert(1)</script>" not in page)
+        check("...and shown as text instead", "&lt;script&gt;" in page)
+
+        m365.handle_callback = lambda *a, **k: '<img src=x onerror=alert(1)>'
+        page = appmod.oauth_callback(FakeRequest())
+        check("a hostile UPN is escaped too", "<img src=x" not in page)
+        # The page's own markup must survive escaping.
+        check("the page still renders", "</html>" in page)
+    finally:
+        m365.handle_callback = real
+
+
+def test_endpoint_validation_blocks_ssrf_targets():
+    """Two providers take a URL from the analyst and the server fetches it.
+    Harmless on a desktop; a network scanner once the app is exposed."""
+    from log_masker import providers
+
+    def refused(url):
+        try:
+            providers.validate_endpoint(url)
+            return False
+        except providers.ProviderError:
+            return True
+
+    check("loopback stays allowed (Ollama lives there)",
+          not refused("http://127.0.0.1:11434"))
+    check("a normal https endpoint is allowed",
+          not refused("https://my-resource.openai.azure.com"))
+    check("a hostname we cannot resolve here is allowed",
+          not refused("http://ollama.internal:11434"))
+
+    check("the AWS/GCP/Azure metadata IP is refused",
+          refused("http://169.254.169.254/latest/meta-data/"))
+    check("IPv6 link-local is refused", refused("http://[fe80::1]:11434"))
+    check("carrier-grade NAT is refused", refused("http://100.64.0.1"))
+    check("metadata.google.internal is refused",
+          refused("http://metadata.google.internal"))
+    check("file:// is refused", refused("file:///etc/passwd"))
+    check("gopher:// is refused", refused("gopher://127.0.0.1:11211"))
+    check("an empty endpoint is refused", refused(""))
+
+
+def test_user_regex_validation():
+    """A saved pattern runs on every future mask, so a catastrophic one does
+    not cause a hiccup — it wedges every analysis until the file is edited."""
+    from log_masker import masker
+
+    def rejected(regex):
+        try:
+            masker.validate_user_regex(regex)
+            return False
+        except ValueError:
+            return True
+
+    check("a normal pattern is accepted",
+          not rejected(r"\bAKIA[0-9A-Z]{16}\b"))
+    check("a field-anchored pattern is accepted", not rejected(r"user=(\w+)"))
+    check("an invalid regex is rejected with a message", rejected("(["))
+    check("an empty pattern is rejected", rejected("   "))
+    check("an absurdly long pattern is rejected",
+          rejected("a" * (masker.MAX_REGEX_LENGTH + 1)))
+
+    # Probes are derived from the pattern's own literals, because (x+x+)+y is
+    # instant against a run of "a" and pathological against a run of "x".
+    check("nested quantifiers are rejected", rejected(r"(a+)+$"))
+    check("...whatever character they use", rejected(r"(x+x+)+y"))
+    check("...including character classes", rejected(r"([a-zA-Z]+)*$"))
+    check("...and \\w with optional whitespace", rejected(r"(\w+\s?)*$"))
+
+
+def test_token_cache_is_never_world_readable():
+    """The M365 cache holds a refresh token. It used to be created with the
+    default umask and chmod-ed afterwards, leaving a window at 0644."""
+    if os.name == "nt":
+        print("SKIP - POSIX permissions (Windows uses ACLs)")
+        return
+    from log_masker import m365
+
+    class FakeCache:
+        has_state_changed = True
+
+        def serialize(self):
+            return '{"RefreshToken": {"secret": "very-secret"}}'
+
+    with tempfile.TemporaryDirectory() as tmp:
+        real = m365.CACHE_FILE
+        m365.CACHE_FILE = os.path.join(tmp, "m365_token_cache.json")
+        try:
+            m365._save_cache(FakeCache())
+            mode = oct(os.stat(m365.CACHE_FILE).st_mode)[-3:]
+            check(f"the token cache is owner-only (got {mode})", mode == "600")
+        finally:
+            m365.CACHE_FILE = real
+
+
 if __name__ == "__main__":
     test_host_check()
     test_allowed_hosts_env()
@@ -460,4 +574,8 @@ if __name__ == "__main__":
     test_misconfiguration_is_explained()
     test_empty_secrets_are_refused()
     test_unicode_and_large_secrets()
+    test_oauth_callback_escapes_provider_text()
+    test_endpoint_validation_blocks_ssrf_targets()
+    test_user_regex_validation()
+    test_token_cache_is_never_world_readable()
     print("\nAll security tests passed.")

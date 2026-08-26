@@ -21,6 +21,7 @@ per-OS data directory resolved by paths.py.
 import os
 import re
 import sys
+import html
 import json
 import time
 import uuid
@@ -500,10 +501,14 @@ def oauth_callback(request: Request):
     except m365.M365Error as e:
         msg = f"Sign-in failed: {e}"
         ok = False
+    # `msg` carries text from the identity provider (an error_description, or
+    # the UPN from the token claims). This page is served from the app's own
+    # origin, so markup smuggled through it would run as same-origin script —
+    # with the request guard treating it as us. Escape it.
     color = "#3fb950" if ok else "#f85149"
     return (f"<html><body style='font-family:sans-serif;background:#0d1117;"
             f"color:#e6edf3;padding:40px'><h2 style='color:{color}'>"
-            f"{'✓ Success' if ok else '✗ Error'}</h2><p>{msg}</p>"
+            f"{'✓ Success' if ok else '✗ Error'}</h2><p>{html.escape(msg)}</p>"
             f"<script>setTimeout(()=>window.close(),2500);</script></body></html>")
 
 

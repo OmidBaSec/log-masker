@@ -9,8 +9,11 @@ No masking happens here -- callers pass already-masked text. Keys are passed in
 by the caller (resolved from the OS keychain), never read here.
 """
 
+import ipaddress
 import re
 import json
+from urllib.parse import urlsplit
+
 import requests
 from typing import Dict, List, Optional
 
@@ -121,6 +124,58 @@ PROVIDERS: Dict[str, dict] = {
 class ProviderError(Exception):
     """Raised for configuration or upstream API errors."""
 
+# ---------------------------------------------------------------------------
+# Endpoint validation. Two of the providers take a URL from the analyst — the
+# Ollama endpoint and the Azure resource — and the server then fetches it. On a
+# single-user desktop that is not a boundary worth defending: whoever sets the
+# URL already owns the machine. It becomes one the moment the app is exposed
+# with LOGMASKER_ALLOW_REMOTE, where "the server will fetch any URL you name"
+# is a scanner for the internal network and for cloud metadata.
+#
+# Loopback stays allowed on purpose: Ollama's whole point is 127.0.0.1:11434.
+# ---------------------------------------------------------------------------
+BLOCKED_NETWORKS = (
+    ipaddress.ip_network("169.254.0.0/16"),   # link-local, incl. cloud metadata
+    ipaddress.ip_network("fe80::/10"),        # IPv6 link-local
+    ipaddress.ip_network("100.64.0.0/10"),    # carrier-grade NAT
+)
+
+# Names that resolve to a metadata service without ever looking like one.
+BLOCKED_HOSTNAMES = frozenset({
+    "metadata.google.internal", "metadata.goog", "instance-data",
+    "metadata.azure.com", "metadata",
+})
+
+
+def validate_endpoint(url: str, what: str = "endpoint") -> str:
+    """Return `url` unchanged, or raise ProviderError explaining the refusal."""
+    url = (url or "").strip()
+    if not url:
+        raise ProviderError(f"No {what} configured.")
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ProviderError(
+            f"The {what} must be an http:// or https:// URL (got "
+            f"{parts.scheme or 'no scheme'}).")
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ProviderError(f"The {what} has no host.")
+    if host in BLOCKED_HOSTNAMES:
+        raise ProviderError(
+            f"Refusing to use {host} as the {what}: that is a cloud metadata "
+            "service, not a model endpoint.")
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return url                      # a name we cannot resolve here; allow
+    if any(addr in net for net in BLOCKED_NETWORKS):
+        raise ProviderError(
+            f"Refusing to use {host} as the {what}: link-local and "
+            "carrier-grade-NAT addresses are where cloud metadata services "
+            "live.")
+    return url
+
+
 
 def _post(url: str, headers: dict, payload: dict,
           timeout: int = REQUEST_TIMEOUT) -> dict:
@@ -209,6 +264,7 @@ def _call_azure(api_key, model, system, messages, cfg) -> str:
     api_version = cfg.get("azure_api_version") or "2024-08-01-preview"
     if not endpoint or not deployment:
         raise ProviderError("Azure endpoint and deployment name are required.")
+    endpoint = validate_endpoint(endpoint, "Azure endpoint")
     url = (f"{endpoint}/openai/deployments/{deployment}/chat/completions"
            f"?api-version={api_version}")
     data = _post(
@@ -219,8 +275,9 @@ def _call_azure(api_key, model, system, messages, cfg) -> str:
 
 
 def _ollama_endpoint(cfg) -> str:
-    return ((cfg or {}).get("ollama_endpoint")
-            or OLLAMA_DEFAULT_ENDPOINT).rstrip("/")
+    endpoint = ((cfg or {}).get("ollama_endpoint")
+                or OLLAMA_DEFAULT_ENDPOINT).rstrip("/")
+    return validate_endpoint(endpoint, "Ollama endpoint")
 
 
 def _call_ollama(api_key, model, system, messages, cfg) -> str:

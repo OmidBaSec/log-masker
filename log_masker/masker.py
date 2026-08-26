@@ -496,9 +496,98 @@ def get_builtin_patterns() -> List[Dict[str, object]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# User-supplied regex validation.
+#
+# Saved patterns are not run once — they run on *every* mask call, forever. A
+# pattern with catastrophic backtracking (the classic `(a+)+$`) therefore does
+# not cause a transient hiccup: it wedges every future analysis, and the leak
+# guard with it, until somebody hand-edits the JSON. That is worth spending a
+# subprocess on at save time.
+#
+# The check has to run out-of-process because `re` holds the GIL while it
+# backtracks: a thread could not be timed out, it would freeze the server.
+# ---------------------------------------------------------------------------
+MAX_REGEX_LENGTH = 500
+REGEX_CHECK_SECONDS = 2.0
+
+# Exponential backtracking only shows itself on input the pattern almost
+# matches, so generic probes are not enough: `(x+x+)+y` is instant against a
+# run of "a" and pathological against a run of "x". Probes are therefore built
+# from the literal characters of the pattern under test, plus a few generic
+# shapes for patterns written entirely with character classes.
+#
+# This is a best-effort trap for the common cases, not a proof of safety — no
+# cheap check is.
+_GENERIC_PROBES = (
+    "a" * 42 + "!",
+    "0123456789" * 6 + "@",
+    "ab" * 24 + ";",
+    " " * 40 + "!",
+    "2026-06-09 10:31:02 user=jsmith from 10.4.2.19 host=ws07.acme.local",
+)
+
+
+def _probes_for(regex: str) -> tuple:
+    """Adversarial inputs tailored to `regex`: a long run of each literal
+    character it mentions, which is what makes a nested quantifier blow up."""
+    literals = []
+    for ch in regex:
+        if ch.isalnum() and ch not in literals:
+            literals.append(ch)
+        if len(literals) >= 6:
+            break
+    tailored = [ch * 40 + "!" for ch in literals]
+    tailored += ["".join(literals) * 12 + "!"] if len(literals) > 1 else []
+    return tuple(tailored) + _GENERIC_PROBES
+
+_PROBE_SCRIPT = """
+import re, sys
+pattern = re.compile(sys.argv[1])
+for probe in sys.argv[2:]:
+    pattern.search(probe)
+"""
+
+
+def validate_user_regex(regex: str) -> str:
+    """Return `regex` if it is safe to persist, else raise ValueError.
+
+    Rejects patterns that do not compile, that are absurdly long, or that take
+    too long against short adversarial inputs."""
+    regex = (regex or "").strip()
+    if not regex:
+        raise ValueError("The pattern is empty.")
+    if len(regex) > MAX_REGEX_LENGTH:
+        raise ValueError(
+            f"Pattern is {len(regex)} characters; the limit is "
+            f"{MAX_REGEX_LENGTH}.")
+    try:
+        re.compile(regex)
+    except re.error as e:
+        raise ValueError(f"Not a valid regular expression: {e}")
+
+    import subprocess
+    import sys
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _PROBE_SCRIPT, regex, *_probes_for(regex)],
+            capture_output=True, timeout=REGEX_CHECK_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise ValueError(
+            "This pattern takes too long to evaluate — it backtracks "
+            "catastrophically on ordinary input, and saving it would hang "
+            "every future analysis. Avoid nested quantifiers such as (a+)+.")
+    except OSError:
+        return regex          # cannot spawn a checker; do not block the save
+    if proc.returncode != 0:
+        raise ValueError("Not a valid regular expression.")
+    return regex
+
+
 def set_builtin_pattern(pattern_id: str, regex: str) -> None:
     """Override a built-in pattern's regex (persists to OVERRIDES_FILE).
-    Raises ValueError for an unknown id, re.error for a bad regex."""
+    Raises ValueError for an unknown id or an unsafe/invalid regex."""
+    regex = validate_user_regex(regex)
     default = None
     for (pid, _src, _note), (_cat, _label, d) in zip(_PATTERN_META,
                                                      _DEFAULT_PATTERNS):
