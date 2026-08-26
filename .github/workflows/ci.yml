@@ -84,6 +84,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub's runner image happens to ship binfmt handlers, so the arm64
+      # leg builds without this — but relying on that is an undocumented
+      # dependency on the runner image. Register QEMU explicitly.
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       # The image is documented as multi-arch; prove both targets still build.
@@ -110,7 +115,14 @@ jobs:
       # things the Dockerfile actually promises.
       - name: Smoke test the container
         run: |
-          docker run -d --name lm-ci -p 127.0.0.1:8888:8888 -v lm-ci-data:/data log-masker:ci
+          # Same hardening docker-compose.yml specifies, so the documented
+          # deployment path is what gets tested — not a laxer one.
+          run_container() {
+            docker run -d --name "$1" \
+              --read-only --tmpfs /tmp --security-opt no-new-privileges \
+              -p 127.0.0.1:8888:8888 -v lm-ci-data:/data log-masker:ci
+          }
+          run_container lm-ci
 
           # Wait on the image's own HEALTHCHECK rather than a fixed sleep.
           for i in $(seq 1 30); do
@@ -144,14 +156,24 @@ jobs:
           code=$(curl -sS -o /dev/null -w '%{http_code}' -H "$H" http://127.0.0.1:8888/static/encoding.js)
           echo "static asset -> $code"; [ "$code" = "200" ] || exit 1
 
-          # State must survive a restart on the mounted volume.
+          # State must survive the container being destroyed and re-created.
+          # `docker restart` would not prove this: it keeps the same writable
+          # layer, so the check would pass with no volume mounted at all.
           curl -sS -H "$H" -X POST -H 'content-type: application/json' \
             -d '{"provider":"openai","model":"gpt-5.5"}' http://127.0.0.1:8888/test >/dev/null || true
-          before=$(docker exec lm-ci sh -c 'wc -l < /data/ai_requests.jsonl')
-          docker restart lm-ci >/dev/null && sleep 8
-          after=$(docker exec lm-ci sh -c 'wc -l < /data/ai_requests.jsonl')
-          echo "audit entries before/after restart: $before/$after"
-          [ "$before" = "$after" ] || { echo "volume did not persist"; exit 1; }
+          count_entries() { docker exec "$1" sh -c 'wc -l < /data/ai_requests.jsonl 2>/dev/null || echo 0' | tr -d ' '; }
+
+          before=$(count_entries lm-ci)
+          # Guard against a vacuous pass: if nothing was written there is
+          # nothing to prove, and a missing file must not read as "0 == 0".
+          [ "$before" -gt 0 ] || { echo "no audit line was written; persistence check would be vacuous"; docker logs lm-ci; exit 1; }
+
+          docker rm -f lm-ci >/dev/null
+          run_container lm-ci2
+          sleep 8
+          after=$(count_entries lm-ci2)
+          echo "audit entries before/after re-creation: $before/$after"
+          [ "$before" = "$after" ] || { echo "state did not survive container re-creation"; exit 1; }
 
       - name: Compose file is valid
         run: |
