@@ -1,0 +1,14 @@
+# Findings gitleaks has already judged and that are not secrets.
+#
+# Each line is a fingerprint: <commit>:<file>:<rule>:<line>. Listing one here
+# suppresses that finding only — the same rule still fires anywhere else.
+#
+# These three are one fake API key in the round-trip test, written when the
+# test was added. The literal has since been renamed to an obviously-fake
+# value, but a commit is immutable: a full-history scan still reads the old
+# one out of the diff that introduced it. Rewriting history to remove a
+# placeholder would change every commit id in the repository for no security
+# gain, so the finding is recorded as reviewed instead.
+355ca4c5026cf9f0cf5e8a5e4b6bec0124576c53:test_masker.py:generic-api-key:16
+355ca4c5026cf9f0cf5e8a5e4b6bec0124576c53:test_masker.py:generic-api-key:26
+355ca4c5026cf9f0cf5e8a5e4b6bec0124576c53:test_masker.py:generic-api-key:38

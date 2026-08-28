@@ -27,7 +27,7 @@ def check(name, cond):
 def test_roundtrip():
     raw = (
         "2026-06-09 user=jsmith logged in from 10.4.2.19 to vpn.acme-corp.com\n"
-        "email jane.doe@acme-corp.com token=sk-abc123def456ghi789jkl\n"
+        "email jane.doe@acme-corp.com token=sk-exampleexampleexample\n"
         "session 550e8400-e29b-41d4-a716-446655440000 mac 00:1A:2B:3C:4D:5E\n"
     )
     masked, mapping = masker.mask(raw, ALL)
@@ -37,7 +37,7 @@ def test_roundtrip():
     check("ip removed", "10.4.2.19" not in masked)
     check("domain removed", "acme-corp.com" not in masked)
     check("email removed", "jane.doe@acme-corp.com" not in masked)
-    check("apikey removed", "sk-abc123def456ghi789jkl" not in masked)
+    check("apikey removed", "sk-exampleexampleexample" not in masked)
     check("uuid removed", "550e8400-e29b-41d4-a716-446655440000" not in masked)
     check("mac removed", "00:1A:2B:3C:4D:5E" not in masked)
 
@@ -49,7 +49,7 @@ def test_roundtrip():
     restored = masker.unmask(fake_ai, mapping)
     check("restore user", "jsmith" in restored)
     check("restore ip", "10.4.2.19" in restored)
-    check("restore apikey", "sk-abc123def456ghi789jkl" in restored)
+    check("restore apikey", "sk-exampleexampleexample" in restored)
 
 
 def test_stable_placeholders():
