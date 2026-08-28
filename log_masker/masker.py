@@ -28,8 +28,8 @@ from log_masker import paths
 
 # Categories map to the UI checkboxes.
 CATEGORIES = {
-    "identities": "Usernames, emails, person names",
-    "network": "Domains, hostnames, IPs, MAC addresses",
+    "identities": "Usernames, emails, person names, groups, organisations",
+    "network": "Domains, hostnames, IPs, MAC addresses, cloud resources",
     "secrets": "API keys, tokens, UUIDs, credit cards, account numbers",
 }
 
@@ -80,6 +80,23 @@ _WINDOWS_BUILTIN_VALUES = {
     "root", "https", "http", "ftp", "unknown", "none", "true", "false",
 }
 
+# Well-known SaaS applications and cloud services. When a SaaS audit log names
+# the application an action happened in ("appName":"Box"), that names the
+# vendor, not the customer -- and it is usually the very thing the alert is
+# about, so masking it makes the event unreadable for no protection.
+_SAAS_APP_ALLOWLIST = {
+    "box", "dropbox", "salesforce", "workday", "servicenow", "slack", "zoom",
+    "github", "gitlab", "jira", "confluence", "atlassian", "okta", "onelogin",
+    "duo", "docusign", "jumpcloud", "proofpoint", "qualys", "cribl",
+    "office 365", "microsoft 365", "sharepoint", "sharepoint online",
+    "onedrive", "onedrive for business", "exchange", "exchange online",
+    "microsoft teams", "teams", "outlook", "gmail", "google drive",
+    "google workspace", "aws", "amazon web services", "azure", "gcp",
+    "google cloud", "dynamics 365", "power bi", "power apps", "power automate",
+    "zendesk", "hubspot", "netsuite", "sap", "oracle", "tableau", "snowflake",
+    "databricks",
+}
+
 # DOMAIN\user matches whose "domain" part is really a built-in prefix
 # (NT AUTHORITY\SYSTEM, NT SERVICE\TrustedInstaller, BUILTIN\Administrators).
 _BUILTIN_DOMAIN_PREFIXES = {"authority", "service", "builtin"}
@@ -100,6 +117,20 @@ def _compile_patterns():
     # is masked as one token instead of just the embedded GUID.
     p.append(("network", "RESOURCE", re.compile(
         r"(?i)\"resource[_-]?id\"\s*:\s*\"([^\"]+)\"")))
+    # --- AWS, GCP and SaaS audit logs -------------------------------------
+    # AWS ARNs name the account and the principal or resource inside it, so
+    # the whole value is masked as one token: masking only the embedded
+    # account number would leave "…:user/j.smith" in plain sight. The
+    # 12-digit account field is required, which deliberately spares vendor
+    # product ARNs (arn:aws:securityhub:eu-west-1::product/aws/guardduty) --
+    # those name the detector, not the customer.
+    p.append(("network", "ARN", re.compile(
+        r"(?i)\barn:aws[a-z\-]*:[a-z0-9\-]*:[a-z0-9\-]*:\d{12}:"
+        r"[^\s\"',\\]+")))
+    # AWS Config and GCP audit logs carry the customer's resource path under
+    # "resourceName" ("projects/acme-prod/zones/…/instances/web-prod-01").
+    p.append(("network", "RESOURCE", re.compile(
+        r"(?i)\"resource[_-]?name\"\s*:\s*\"([^\"]+)\"")))
     # Credit-card-like 13-16 digit groups (optionally separated by - or space).
     p.append(("secrets", "CC", re.compile(
         r"\b(?:\d[ -]?){13,16}\b")))
@@ -110,6 +141,31 @@ def _compile_patterns():
         r"|gh[pousr]_[A-Za-z0-9]{20,}"
         r"|xox[baprs]-[A-Za-z0-9-]{10,}"
         r"|AIza[0-9A-Za-z\-_]{30,})\b")))
+    # AWS unique ids: IAM principals (AIDA/AROA/AGPA/AIPA), managed policies
+    # (ANPA/ANVA) and temporary STS access keys (ASIA). They hold no secret
+    # material, but they name the principal behind every CloudTrail event.
+    p.append(("secrets", "KEYID", re.compile(
+        r"\bA(?:IDA|ROA|GPA|IPA|NPA|NVA|SIA|BIA|CCA)[A-Z0-9]{16,}\b")))
+    # SaaS object ids that name a tenant's user, app or integration:
+    # Okta (00u…, 00g…, 0oa…) and Duo Security (DU…, DI…, DA…, DG…).
+    p.append(("secrets", "KEYID", re.compile(
+        r"\b(?:(?:00[ugo]|0oa)[A-Za-z0-9]{15,}|D[UIAG][A-Z0-9]{18})\b")))
+    # 24-character object ids under an id key: Atlassian account ids,
+    # JumpCloud / Mongo-style ObjectIds. Too short for the hex-blob pattern
+    # further down and meaningless out of context, so the key is required.
+    p.append(("secrets", "KEYID", re.compile(
+        r"(?i)\"[a-z_]*id\"\s*:\s*\"([0-9a-z]{24})\"")))
+    # Cloud / SaaS account and tenant numbers. AWS account ids are exactly
+    # 12 digits; OneLogin, Zoom and Dynamics 365 use shorter integers. Only
+    # masked next to an explicit key -- a bare integer identifies nothing.
+    p.append(("secrets", "ACCTID", re.compile(
+        r"(?i)\b[a-z_]*(?:account|tenant|customer|subscriber"
+        r"|org(?:anization)?)[_-]?id\"?\s*[=:]\s*\"?(\d{4,20})\b")))
+    # Numeric user ids of SaaS audit logs ("user_id":123456,
+    # "actor_user_id":654321). The generic user patterns deliberately skip
+    # bare numbers; inside a tenant these do identify a person.
+    p.append(("secrets", "ACCTID", re.compile(
+        r"(?i)\"[a-z_]*user[_-]?id\"\s*:\s*(\d{4,20})\b")))
     # Bearer / token / password / SNMP-community key=value pairs -> mask the
     # value only. The optional quote before the separator covers JSON keys:
     #   "password": "hunter2"
@@ -137,6 +193,63 @@ def _compile_patterns():
     # Emails (before domains).
     p.append(("identities", "EMAIL", re.compile(
         r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")))
+    # --- SaaS / cloud audit logs ------------------------------------------
+    # These formats are JSON, with the identity under a vendor-specific key
+    # and often a multi-word value ("John Smith", "Acme Payroll App") that
+    # the generic key=value patterns further down truncate at the first
+    # space. Anchoring on the quoted key and taking the whole quoted value
+    # keeps each identity a single placeholder. They sit after the email
+    # pattern so an address still gets an [EMAIL_n] alias, not [USER_n].
+    #
+    # Actor fields: GitHub ("actor"), Jira ("authorKey"), Zoom ("operator"),
+    # OneLogin ("actor_user_name"), Power Platform ("createdBy").
+    p.append(("identities", "USER", re.compile(
+        r"(?i)\"(?:actor|author(?:[_-]?key)?|operator|initiator|principal"
+        r"|impersonator|requester|assignee|created[_-]?by|modified[_-]?by"
+        r"|updated[_-]?by|closed[_-]?by|deleted[_-]?by|performed[_-]?by"
+        r"|[a-z_]*user[_-]?name)\"\s*:\s*\"([^\"]+)\"")))
+    # Actor objects: Duo ("user":{"name":…}), JumpCloud ("initiated_by":
+    # {"username":…}), Zoom ("participant":{"user_name":…}).
+    p.append(("identities", "USER", re.compile(
+        r"(?i)\"(?:user|actor|initiated[_-]?by|participant|operator|owner"
+        r"|assignee|author|member)\"\s*:\s*\{[^{}]*?"
+        r"\"(?:user[_-]?)?name\"\s*:\s*\"([^\"]+)\"")))
+    # Group, zone, role and policy names name the customer's own org units
+    # and rules: CylancePROTECT zones, Defender rbacGroupName, Okta and
+    # JumpCloud groups, Purview and Imperva policy names. Handles both
+    # key=value ("Zone Names: (Finance-EU)") and JSON, and takes the whole
+    # value so "Domain Admins" stays one token.
+    p.append(("identities", "GROUP", re.compile(
+        r"(?i)\b(?:[a-z_]*group|zone|policy|role)[ _-]?names?[\"']?\s*[=:]"
+        r"\s*[(\"']?([^,;()\"'\r\n]+?)(?=\s*[,;)\"'\r\n]|$)")))
+    p.append(("identities", "GROUP", re.compile(
+        r"(?i)\"(?:department|division|team|business[_-]?unit"
+        r"|target[_-]?user[_-]?or[_-]?group[_-]?name)\"\s*:\s*\"([^\"]+)\"")))
+    # Jira audit: "objectItem":{"name":"acme-admins","typeName":"GROUP"}.
+    p.append(("identities", "GROUP", re.compile(
+        r"(?i)\"(?:object[_-]?item|group|team|role)\"\s*:\s*\{[^{}]*?"
+        r"\"name\"\s*:\s*\"([^\"]+)\"")))
+    # CEF custom string fields are self-describing -- "cs1Label=Policy cs1=…".
+    # Imperva SecureSphere puts the customer's policy and application names
+    # there, where the key alone ("cs1") tells the generic patterns nothing.
+    # The back-reference ties the value to its own label; the bounded lazy
+    # gap keeps it linear.
+    p.append(("identities", "GROUP", re.compile(
+        r"(?i)\bcs(\d)Label=(?:policy|rule|group|department|tenant|site"
+        r"|application|app)\b.{0,120}?\bcs\1=([^\s\"']+)")))
+    # Organisation / tenant / workspace names: GitHub ("org", "business"),
+    # Dynamics 365 ("Organization"), Jira and Zoom tenants.
+    p.append(("identities", "ORG", re.compile(
+        r"(?i)\"(?:org|organi[sz]ation(?:[_-]?name)?|business(?:[_-]?name)?"
+        r"|tenant(?:[_-]?name)?|workspace|company(?:[_-]?name)?"
+        r"|customer(?:[_-]?name)?)\"\s*:\s*\"([^\"]+)\"")))
+    # Zoom meeting topics and the "operation detail" strings of SaaS admin
+    # logs are pure customer business content. Email subjects are
+    # deliberately NOT masked: in a phishing case the subject line is the
+    # evidence being analysed, exactly like a file hash.
+    p.append(("identities", "SUBJECT", re.compile(
+        r"(?i)\"(?:topic|meeting[_-]?topic|operation[_-]?detail"
+        r"|session[_-]?name)\"\s*:\s*\"([^\"]+)\"")))
     # Active Directory distinguished names, e.g.
     #   CN=John Smith,OU=Sales,DC=acme,DC=com
     # Masked as one token; requires 2+ components so a lone "DC=..." in prose
@@ -291,6 +404,42 @@ def _compile_patterns():
     p.append(("network", "HOST", re.compile(
         r"(?i)-(?:computer(?:name)?|server|hostname|node|machine)\s+"
         r"[\"']?([A-Za-z0-9][A-Za-z0-9._\-]+)")))
+    # Customer-named cloud and SaaS containers: GitHub repos, GCP projects,
+    # S3 buckets, Power Platform environments, Okta and OneLogin application
+    # names, Okta target "alternateId". These name the customer's estate as
+    # surely as a hostname does. Vendor app names ("appName":"Box") are
+    # filtered out by _SAAS_APP_ALLOWLIST rather than by the regex.
+    p.append(("network", "ASSET", re.compile(
+        r"(?i)\"(?:repo(?:sitory)?(?:[_-]?name)?"
+        r"|project(?:[_-]?(?:id|name|number))?"
+        r"|environment(?:[_-]?name)?|namespace|bucket(?:[_-]?name)?"
+        r"|[a-z_]*app(?:lication)?[_-]?name|service[_-]?name"
+        r"|instance[_-]?name|site[_-]?name|alternate[_-]?id"
+        r"|source[_-]?file[_-]?name|destination[_-]?file[_-]?name"
+        r"|source[_-]?relative[_-]?url)\"\s*:\s*"
+        r"\"([^\"]+)\"")))
+    # CEF sourceServiceName= (Imperva WAF Gateway names the protected app).
+    p.append(("network", "ASSET", re.compile(
+        r"(?i)\b(?:source|destination|dest)?service[_-]?name=([^\s\"']+)")))
+    # S3 server access logs are positional: the 64-hex bucket-owner canonical
+    # id leads the line and the bucket name follows it; the object key
+    # follows the REST.<verb>.<resource> operation.
+    p.append(("network", "ASSET", re.compile(
+        r"(?m)^[0-9a-f]{64}[ \t]+([^\s\[]+)[ \t]+\[")))
+    p.append(("network", "ASSET", re.compile(
+        r"\bREST\.[A-Z]+\.[A-Z]+[ \t]+(\S+)")))
+    # Object paths inside cloud-storage and SharePoint/OneDrive URLs. Only
+    # the path is claimed: the hostname is left to the FQDN pattern, so the
+    # same tenant host keeps one [HOST_n] alias everywhere it appears.
+    p.append(("network", "ASSET", re.compile(
+        r"(?i)\.(?:blob|file|queue|table|dfs)\.core\.windows\.net"
+        r"(/[^\s\"'?<>]+)")))
+    p.append(("network", "ASSET", re.compile(
+        r"(?i)s3[.\-][a-z0-9\-]*\.?amazonaws\.com(/[^\s\"'?<>]+)")))
+    # SharePoint document paths may contain spaces ("/Shared Documents/…"),
+    # so the value runs to the closing quote or end of line.
+    p.append(("network", "ASSET", re.compile(
+        r"(?i)\.sharepoint\.com(/[^\"'\r\n]*?)(?=[\"'\r\n]|$)")))
     # Optional quote before the separator covers JSON ("DeviceName":"ws07");
     # the space in the key covers Symantec EP's "Computer name:". The prefixed
     # `host` alternative covers CEF shost=/dhost=/dvchost=/identHostName=. The
@@ -303,6 +452,9 @@ def _compile_patterns():
     # XML element style (McAfee ePO <MachineName>WS07</MachineName>).
     p.append(("network", "HOST", re.compile(
         r"(?i)<(?:MachineName|ComputerName|HostName)>([^<]+)<")))
+    # Qualys VM asset exports (XML): <DNS>, <NETBIOS>, <FQDN> elements.
+    p.append(("network", "HOST", re.compile(
+        r"(?i)<(?:NETBIOS|DNS|DNS_DATA|FQDN)>([^<]+)<")))
     # dhcpd: hostname reported in parens — DHCPACK on 10.1.2.55 to
     # 58:40:4e:ab:3d:4e (WS-FIN-07) via eth0
     p.append(("network", "HOST", re.compile(
@@ -373,6 +525,17 @@ _KEEP_PATTERNS = [
                r"([0-9a-fA-F\-]{8,64})"),
     # MITRE ATT&CK technique / tactic ids.
     re.compile(r"\b(T\d{4}(?:\.\d{3})?|TA\d{4})\b"),
+    # Vendor event taxonomies: Okta "eventType":"user.session.start", GitHub
+    # "action":"repo.destroy", GCP "methodName":"v1.compute.instances.delete",
+    # CloudTrail "eventSource":"signin.amazonaws.com". These dotted lowercase
+    # enums are the field that says WHAT HAPPENED, and the FQDN pattern would
+    # otherwise mask them as hostnames. The dotted-enum shape is also what
+    # separates a vendor API ("serviceName":"compute.googleapis.com") from a
+    # customer's own service name, which stays maskable.
+    re.compile(r"(?i)\"(?:event[_-]?type|event[_-]?name|event[_-]?source"
+               r"|action|operation(?:[_-]?name)?|method[_-]?name"
+               r"|service[_-]?name|activity[_-]?type|category[_-]?type)\""
+               r"\s*:\s*\"([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)\""),
 ]
 
 
@@ -393,9 +556,23 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
      "Security identifiers (S-1-5-21-…); short well-known SIDs stay readable"),
     ("azure-resource-id", "Microsoft Azure",
      "\"resourceId\" values (subscription + resource names) as one token"),
+    ("aws-arn", "AWS (CloudTrail, Config, S3, Security Hub)",
+     "Full ARNs as one token; vendor product ARNs stay readable"),
+    ("cloud-resource-name", "AWS Config & GCP audit",
+     "\"resourceName\" project / instance paths as one token"),
     ("credit-card", "Generic secrets", "Credit-card-like 13-16 digit groups"),
     ("api-keys", "Generic secrets",
      "Known API-key shapes (Anthropic, OpenAI, AWS, GitHub, Slack, Google)"),
+    ("aws-principal-id", "AWS (CloudTrail, Security Hub)",
+     "IAM principal ids and STS temporary keys (AIDA/AROA/ASIA…)"),
+    ("saas-object-id", "Okta & Duo Security",
+     "Okta object ids (00u…, 0oa…) and Duo integration keys"),
+    ("saas-object-id-kv", "Atlassian Jira & JumpCloud",
+     "24-character account / object ids under an id key"),
+    ("cloud-account-id", "AWS, Dynamics 365, OneLogin",
+     "Account / tenant numbers under an explicit key"),
+    ("saas-user-id-num", "OneLogin, Zoom, JumpCloud",
+     "Numeric user ids (\"user_id\":123456)"),
     ("secret-kv", "Generic secrets",
      "password= / token= / community= values (key=value and JSON)"),
     ("serial-kv", "SonicWALL & devices", "Device serial numbers (sn=, serial=)"),
@@ -405,6 +582,22 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
     ("hex-blob", "Generic secrets", "Long hex blobs (hashes, 32+ chars)"),
     # --- identities ---
     ("email", "Generic", "Email addresses"),
+    ("saas-actor-kv", "SaaS audit logs (GitHub, Jira, Zoom, OneLogin)",
+     "\"actor\" / \"authorKey\" / \"operator\" / \"createdBy\" values"),
+    ("saas-actor-object", "Duo Security, JumpCloud, Zoom",
+     "Names inside actor objects (\"user\":{\"name\":…})"),
+    ("group-name-kv", "CylancePROTECT, M365 Defender, Purview, Imperva",
+     "Zone / group / policy / role names (key=value and JSON)"),
+    ("org-unit-kv", "Entra ID, Okta, Office 365",
+     "Department / division / team / target-group names"),
+    ("group-object", "Atlassian Jira audit",
+     "Group names inside \"objectItem\":{\"name\":…}"),
+    ("cef-custom-label", "Imperva WAF Gateway & CEF",
+     "Self-describing CEF custom strings (cs1Label=Policy cs1=…)"),
+    ("org-tenant-kv", "GitHub, Dynamics 365, Atlassian Jira",
+     "Organisation / tenant / business / workspace names"),
+    ("subject-topic-kv", "Zoom & SaaS admin logs",
+     "Meeting topics and operation details (email subjects are kept)"),
     ("ad-dn", "Active Directory",
      "Distinguished names (CN=…,OU=…,DC=…) as one token"),
     ("winxml-user", "Windows XML & Sysmon",
@@ -459,9 +652,24 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
      "Hostname after 'Jun 10 14:23:01' style timestamps"),
     ("cli-host-param", "CLI parameters (PowerShell…)",
      "-ComputerName X / -Server X style parameters"),
+    ("cloud-asset-kv", "GitHub, GCP, AWS, Power Platform, Okta, Office 365",
+     "Repos, projects, buckets, environments, apps, SharePoint documents"),
+    ("cef-service-name", "Imperva WAF Gateway & CEF",
+     "sourceServiceName= protected-application names"),
+    ("s3-access-bucket", "AWS S3 server access logs",
+     "Bucket name after the owner canonical id"),
+    ("s3-access-key", "AWS S3 server access logs",
+     "Object key after the REST.<verb>.<resource> operation"),
+    ("azure-blob-path", "Azure Storage",
+     "Container + object path of blob/file/queue/table URLs"),
+    ("s3-url-path", "AWS S3", "Object path of s3…amazonaws.com URLs"),
+    ("sharepoint-path", "Office 365 & Purview",
+     "Site and document path of SharePoint / OneDrive URLs"),
     ("host-kv", "Generic key=value / JSON / CEF",
      "hostname= shost= dvchost= DeviceName= devname= Computer name: …"),
     ("epoxml-host", "McAfee ePO XML", "<MachineName>…</MachineName> elements"),
+    ("qualys-xml-host", "Qualys VM",
+     "<DNS> / <NETBIOS> / <FQDN> elements of asset exports"),
     ("dhcpd-host", "Linux DHCP", "Hostname in parens: (WS-FIN-07) via eth0"),
     ("unc-host", "UNC paths", "Server name in \\\\fileserver\\share paths"),
     ("compromised-entity", "Microsoft Defender for Cloud",
@@ -765,6 +973,14 @@ def _csv_spans(text: str):
     if len(lines) < 2:
         return []
     header = lines[0].rstrip("\r")
+    # JSON Lines is the wire format of most cloud connectors (AWS, Okta,
+    # GitHub, Duo…), and a record has commas and quoted tokens just like a
+    # CSV row: read as a CSV, the first record becomes the "header" and the
+    # object's *keys* get masked as though they were values, while the real
+    # values are left claimed and unmasked. A CSV header row never starts
+    # with { or [.
+    if header.lstrip()[:1] in ("{", "["):
+        return []
     delim = "\t" if header.count("\t") > header.count(",") else ","
     if header.count(delim) < 3:
         return []
@@ -807,7 +1023,16 @@ def _accept(label: str, value: str) -> bool:
     v = value.strip()
     if not v:
         return False
-    if label in ("USER", "DOMAIN", "HOST") and v.lower() in _WINDOWS_BUILTIN_VALUES:
+    if label in ("USER", "DOMAIN", "HOST", "ASSET", "ORG", "GROUP",
+                 "SUBJECT") and v.lower() in _WINDOWS_BUILTIN_VALUES:
+        return False
+    # An app name that names the vendor's product rather than the customer's
+    # own resource is the point of the alert -- see _SAAS_APP_ALLOWLIST.
+    if label in ("ASSET", "ORG") and v.lower() in _SAAS_APP_ALLOWLIST:
+        return False
+    # SaaS audit logs use "0" / "1" / "-1" for absent org and group ids;
+    # a group or topic of one or two characters names nothing.
+    if label in ("ASSET", "ORG", "GROUP", "SUBJECT") and len(v) < 3:
         return False
     # NT AUTHORITY\SYSTEM, NT SERVICE\TrustedInstaller, BUILTIN\Administrators…
     if label == "USER" and "\\" in v \

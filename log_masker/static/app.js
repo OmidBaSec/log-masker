@@ -153,7 +153,10 @@ const FIELD_NAMES = {
   IP: "IPv4 address", IPV6: "IPv6 address", MAC: "MAC address", DN: "AD DN",
   SID: "Windows SID", PHONE: "Phone number", SECRET: "Secret / password",
   APIKEY: "API key", UUID: "UUID / GUID", HASH: "Hash / hex blob",
-  CC: "Card-like number", SERIAL: "Device serial", RESOURCE: "Azure resource",
+  CC: "Card-like number", SERIAL: "Device serial", RESOURCE: "Cloud resource",
+  ARN: "AWS ARN", ASSET: "Cloud / SaaS asset", ORG: "Organisation / tenant",
+  GROUP: "Group / policy", SUBJECT: "Topic / operation", KEYID: "Vendor key id",
+  ACCTID: "Account / tenant number",
   CUSTOM: "Custom term",
 };
 

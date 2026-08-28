@@ -169,12 +169,19 @@ Every analysis masks all three categories:
 
 - **Identities** — emails, `user=`/`username=`/`login=` values, `DOMAIN\user`,
   Windows SIDs (`S-1-5-21-…`), Active Directory distinguished names
-  (`CN=…,OU=…,DC=…`), international phone numbers (`+49 …`).
+  (`CN=…,OU=…,DC=…`), international phone numbers (`+49 …`), group, role, zone
+  and policy names (`[GROUP_1]`), departments, organisation and tenant names
+  (`[ORG_1]`), and meeting topics (`[SUBJECT_1]`).
 - **Network** — FQDNs/hostnames, IPv4, IPv6, MAC addresses, syslog header
-  hostnames, `devname=`/`devid=` device names.
+  hostnames, `devname=`/`devid=` device names, and the cloud estate: AWS ARNs
+  as a single token (`[ARN_1]`), `"resourceId"`/`"resourceName"` paths, plus
+  the buckets, repos, projects, environments and document paths of cloud and
+  SaaS logs (`[ASSET_1]`).
 - **Secrets / IDs** — API keys (Anthropic/OpenAI/AWS/GitHub/Slack/Google),
   `password=`/`token=`/`secret=`/`community=` values, UUIDs, long hashes,
-  credit-card-like numbers.
+  credit-card-like numbers, cloud account and tenant numbers (`[ACCTID_1]`),
+  and vendor principal / object ids — IAM `AIDA…`/`ASIA…`, Okta `00u…`, Duo
+  integration keys, 24-character Atlassian ids (`[KEYID_1]`).
 
 Field-aware extraction understands common raw log formats out of the box —
 just paste and the preview updates automatically:
@@ -205,6 +212,37 @@ just paste and the preview updates automatically:
   `"userDisplayName"`, `"AccountName"`, `"AccountDomain"`, `"DeviceName"`,
   `"compromisedEntity"`, `"password"`, `"ipAddress"`; quoted JSON keys are
   understood everywhere (`"user":"x"` works like `user=x`).
+- **AWS** (CloudTrail, Config, S3 server access, Security Hub) — ARNs are
+  masked as one token, so the account number and the principal never split
+  across two placeholders; 12-digit account ids under any `…AccountId` key;
+  IAM principal ids and temporary STS keys (`AIDA…`, `AROA…`, `ASIA…`);
+  EC2/EBS resource ids (`i-0abc…`); and the bucket name plus object key of the
+  positional S3 access log. The vendor's own product ARN
+  (`arn:aws:securityhub:…::product/aws/guardduty`) carries no account number
+  and stays readable.
+- **Identity providers** (Okta, OneLogin, Duo Security, JumpCloud, Entra ID) —
+  Okta object ids (`00u…`, `0oa…`), Duo integration keys, 24-character
+  Atlassian/JumpCloud object ids, numeric `"user_id"` values, actor objects
+  (`"user":{"name":…}`), `"alternateId"` and `"department"`. Multi-word values
+  are taken whole, so `"displayName":"John Smith"` becomes one placeholder
+  instead of a masked first name and a visible surname.
+- **SaaS audit logs** (GitHub, Atlassian Jira, Zoom, DocuSign, Dynamics 365,
+  Power Platform) — actor keys (`"actor"`, `"authorKey"`, `"operator"`,
+  `"createdBy"`), organisation / tenant / business names, repos, environments,
+  group names inside `"objectItem":{"name":…}`, and meeting topics. Event
+  taxonomy values (`"action":"repo.destroy"`) stay readable.
+- **Cloud platforms** (GCP, Azure Storage, Office 365, Purview, Defender for
+  Cloud Apps, M365 Defender) — `"resourceName"` paths, GCP project ids, and
+  the container and document path inside blob, `s3` and SharePoint URLs (only
+  the path is claimed, so the tenant hostname keeps one `[HOST_n]` alias
+  everywhere it appears), Purview DLP policy names and detected values, and
+  `rbacGroupName`.
+- **Cloud-era appliances** (CylancePROTECT, Imperva WAF Gateway, Qualys VM,
+  Infoblox NIOS, UniFi Security Gateway, pfSense, Symantec ProxySG, Cribl) —
+  zone, group and policy names in both `Zone Names: (…)` and JSON form,
+  self-describing CEF custom strings (`cs1Label=Policy cs1=…`, where the key
+  alone tells a generic pattern nothing), and Qualys `<DNS>` / `<NETBIOS>`
+  asset elements.
 - **Firewalls & appliances** — Cisco Meraki (epoch-header device names,
   `identity='x'`), Cisco Firepower/IronPort, Check Point (`user: x;`,
   `src:`/`dst:`), Palo Alto CSV (`acme\user`), Sophos XG
@@ -258,8 +296,8 @@ whole match is.
 
 Open **⚙ Setup → 🧩 Edit masking regexes**. Every built-in pattern is listed,
 grouped by log source type (Windows Event Log, Linux sshd, Cisco Meraki,
-McAfee ePO XML, …) with the field it extracts (`[USER]`, `[HOST]`,
-`[SECRET]`, …). Edit a regex and press **Save** — the change applies to every
+McAfee ePO XML, AWS CloudTrail, Okta, GitHub, …) with the field it extracts
+(`[USER]`, `[HOST]`, `[SECRET]`, …). Edit a regex and press **Save** — the change applies to every
 future paste and survives restarts (stored locally in
 `builtin_overrides.json`). Patterns marked **modified** can be restored with
 **↺ default**. A regex that doesn't compile is rejected on save; if an
@@ -423,9 +461,23 @@ the AI's answer useless — so these survive into the text that is sent:
   `#microsoft.graph.security.deviceEvidence`, `event.kind`. A camelCase final
   label is not a TLD.
 * **System paths and binaries** — `C:\Windows\System32\...`, `powershell.exe`.
+* **Phishing evidence** — the `"subject"` line and the attachment `"filename"`
+  of an email security alert (Proofpoint TAP). In a phishing case the lure *is*
+  the question, exactly like a file hash. The recipient address is still masked.
+* **Vendor product ARNs** — `arn:aws:securityhub:…::product/aws/guardduty` has
+  no account number and names the detector. A customer ARN, which does carry an
+  account number, is masked as one token.
+* **Vendor application names** — `"appName":"Box"` names the SaaS vendor, not
+  the customer; masking it removes the one fact an impossible-travel alert is
+  about. A customer's own app, service or environment name is still masked.
+* **Event taxonomies** — `"action":"repo.destroy"`,
+  `"eventType":"user.session.start"`, `"eventSource":"signin.amazonaws.com"`.
+  These dotted lowercase enums say *what happened*, and would otherwise be
+  read as hostnames.
 
-Tenant ids, Entra device ids, EDR device ids, and link-local addresses *are*
-masked: they identify the organisation or the machine.
+Tenant ids, Entra device ids, EDR device ids, cloud account numbers, and
+link-local addresses *are* masked: they identify the organisation or the
+machine.
 
 ## Log file encodings
 

@@ -527,6 +527,251 @@ def test_qradar_offense_csv():
           "Virus found" in m2 and "Scan complete" in m2 and "j.smith" not in m2)
 
 
+# ---------------------------------------------------------------------------
+# Cloud and SaaS log sources.
+#
+# One test per product family, using the wire format each product actually
+# ships. The assertions are two-sided on purpose: the customer's identities and estate
+# must be gone, and the investigative content — verdicts, vendor product
+# names, MITRE ids, file hashes — must survive, or the analysis the masked
+# log is being sent for becomes impossible.
+# ---------------------------------------------------------------------------
+def test_aws_connector_logs():
+    # CloudTrail, Config, S3 server access, Security Hub findings.
+    raw = (
+        '{"eventName":"ConsoleLogin","userIdentity":{"type":"IAMUser",'
+        '"principalId":"AIDACKCEVSQ6C2EXAMPLE","arn":'
+        '"arn:aws:iam::123456789012:user/j.smith","accountId":"123456789012",'
+        '"accessKeyId":"ASIAIOSFODNN7EXAMPLE","userName":"j.smith"},'
+        '"sourceIPAddress":"203.0.113.5","recipientAccountId":"123456789012"}\n'
+        '{"configurationItem":{"awsAccountId":"123456789012","resourceId":'
+        '"i-0abc123def4567890","resourceName":"web-prod-01"}}\n'
+        "79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be "
+        "acme-payroll-bucket [10/Jun/2026:14:23:01 +0000] 10.1.2.3 "
+        "arn:aws:iam::123456789012:user/j.smith 3E57427F3EXAMPLE "
+        "REST.GET.OBJECT payroll/2026-Q2.xlsx\n"
+        '{"AwsAccountId":"123456789012","ProductArn":'
+        '"arn:aws:securityhub:eu-west-1::product/aws/guardduty",'
+        '"Types":["TTPs/Initial Access"]}\n'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("cloudtrail principal id masked", "AIDACKCEVSQ6C2EXAMPLE" not in masked)
+    check("cloudtrail sts key masked", "ASIAIOSFODNN7EXAMPLE" not in masked)
+    check("cloudtrail arn masked", "arn:aws:iam::123456789012" not in masked)
+    check("aws account id masked everywhere", "123456789012" not in masked)
+    check("config instance id masked", "i-0abc123def4567890" not in masked)
+    check("config resource name masked", "web-prod-01" not in masked)
+    check("s3 bucket masked", "acme-payroll-bucket" not in masked)
+    check("s3 object key masked", "payroll/2026-Q2.xlsx" not in masked)
+    check("arn is one token",
+          "arn:aws:iam::123456789012:user/j.smith" in mapping.values())
+    # The vendor's own product ARN carries no account and names the detector.
+    check("securityhub product arn kept",
+          "arn:aws:securityhub:eu-west-1::product/aws/guardduty" in masked)
+    check("event name kept", '"eventName":"ConsoleLogin"' in masked)
+    check("finding type kept", "TTPs/Initial Access" in masked)
+
+
+def test_identity_provider_connector_logs():
+    # Okta, OneLogin, Duo Security, JumpCloud, Entra ID (AADUserInfo).
+    raw = (
+        '{"eventType":"user.session.start","actor":{"id":"00u1abcdefGHIJKLmno0h8",'
+        '"type":"User","alternateId":"jsmith@acme-corp.com","displayName":"John Smith"},'
+        '"client":{"ipAddress":"203.0.113.5"},"target":[{"id":"0oa1bcdefGHIJKLmno0h8",'
+        '"alternateId":"Acme Payroll App"}],"outcome":{"result":"SUCCESS"}}\n'
+        '{"event_type_id":8,"user_name":"John Smith","user_id":123456,'
+        '"actor_user_name":"Jane Doe","ipaddr":"203.0.113.5","app_name":"Acme Payroll"}\n'
+        '{"access_device":{"ip":"203.0.113.5","hostname":"WS-FIN-07"},'
+        '"user":{"name":"jsmith","key":"DUEXAMPLE01234567890"},'
+        '"integration_key":"DIEXAMPLE01234567890","result":"denied",'
+        '"reason":"user_marked_fraud"}\n'
+        '{"event_type":"sso_auth","initiated_by":{"id":"5f8a1b2c3d4e5f6a7b8c9d0e",'
+        '"type":"user","username":"jsmith"},"client_ip":"203.0.113.5"}\n'
+        '{"userPrincipalName":"j.smith@acme-corp.com","onPremisesSamAccountName":"jsmith",'
+        '"department":"Finance-EU","mobilePhone":"+15551234567"}\n'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("okta actor id masked", "00u1abcdefGHIJKLmno0h8" not in masked)
+    check("okta target app id masked", "0oa1bcdefGHIJKLmno0h8" not in masked)
+    check("okta display name one token", "John Smith" in mapping.values())
+    check("okta target app name masked", "Acme Payroll App" not in masked)
+    check("okta outcome kept", '"result":"SUCCESS"' in masked)
+    check("onelogin numeric user id masked", "123456" not in masked)
+    check("onelogin actor name masked", "Jane Doe" not in masked)
+    check("duo nested user name masked", '"name":"jsmith"' not in masked)
+    check("duo integration key masked", "DIEXAMPLE01234567890" not in masked)
+    check("duo device key masked", "DUEXAMPLE01234567890" not in masked)
+    check("duo denial reason kept", '"reason":"user_marked_fraud"' in masked)
+    check("jumpcloud object id masked", "5f8a1b2c3d4e5f6a7b8c9d0e" not in masked)
+    check("entra upn masked", "j.smith@acme-corp.com" not in masked)
+    check("entra department masked", "Finance-EU" not in masked)
+    check("entra phone masked", "+15551234567" not in masked)
+
+
+def test_saas_audit_connector_logs():
+    # GitHub, Atlassian Jira, Zoom, DocuSign, Dynamics 365, Power Platform.
+    # The 24-character account id is bound here rather than written inline: it
+    # has the shape of a real token, and secret scanners flag that shape when
+    # it sits next to the vendor's name.
+    account_id = "exampleaccountid00000001"
+    raw = (
+        '{"action":"repo.destroy","actor":"jsmith","actor_ip":"203.0.113.5",'
+        '"org":"acme-corp","repo":"acme-corp/payments-api","business":"acme-holdings"}\n'
+        '{"authorKey":"jsmith","authorAccountId":"' + account_id + '",'
+        '"summary":"User added to group","objectItem":{"name":"acme-admins",'
+        '"typeName":"GROUP"},"remoteAddress":"203.0.113.5"}\n'
+        '{"operator":"j.smith@acme-corp.com","action":"Update","payload":{"object":'
+        '{"topic":"Board Review Q2","participant":{"user_name":"John Smith",'
+        '"email":"m.brown@acme-corp.com"}}}}\n'
+        '{"userId":"aa11bb22-cc33-dd44-ee55-ff6677889900","email":"j.smith@acme-corp.com",'
+        '"ipAddress":"203.0.113.5","object":"envelope","action":"Sent"}\n'
+        '{"UserId":"j.smith@acme-corp.com","Organization":"acmecorp",'
+        '"EntityName":"account","ClientIp":"203.0.113.5"}\n'
+        '{"environmentName":"Acme-Prod","appName":"Expense Approvals",'
+        '"createdBy":"j.smith@acme-corp.com","connectorName":"SQL Server"}\n'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("github actor masked", "jsmith" not in masked)
+    check("github org masked", '"org":"acme-corp"' not in masked)
+    check("github repo masked", "acme-corp/payments-api" not in masked)
+    check("github business masked", "acme-holdings" not in masked)
+    check("github action kept", '"action":"repo.destroy"' in masked)
+    check("jira account id masked", account_id not in masked)
+    check("jira group masked", "acme-admins" not in masked)
+    check("jira summary kept", "User added to group" in masked)
+    check("zoom topic masked", "Board Review Q2" not in masked)
+    check("zoom participant name one token", "John Smith" in mapping.values())
+    check("zoom emails masked", "acme-corp.com" not in masked)
+    check("docusign object kept", '"object":"envelope"' in masked)
+    check("dynamics org masked", "acmecorp" not in masked)
+    check("power platform environment masked", "Acme-Prod" not in masked)
+    check("power platform app masked", "Expense Approvals" not in masked)
+
+
+def test_cloud_platform_connector_logs():
+    # GCP audit, Azure Storage, Office 365, Purview DLP, MCAS, M365 Defender.
+    raw = (
+        '{"protoPayload":{"authenticationInfo":{"principalEmail":"jsmith@acme-corp.com"},'
+        '"requestMetadata":{"callerIp":"203.0.113.5"},"resourceName":'
+        '"projects/acme-prod-1234/zones/europe-west1-b/instances/web-prod-01"},'
+        '"resource":{"labels":{"project_id":"acme-prod-1234"}}}\n'
+        '{"category":"StorageWrite","accountName":"acmeprodstorage",'
+        '"callerIpAddress":"203.0.113.5","uri":'
+        '"https://acmeprodstorage.blob.core.windows.net/payroll/2026-Q2.xlsx"}\n'
+        '{"UserId":"j.smith@acme-corp.com","Operation":"FileDownloaded",'
+        '"SiteUrl":"https://acmecorp.sharepoint.com/sites/Finance/",'
+        '"SourceFileName":"payroll-2026.xlsx","TargetUserOrGroupName":"Finance Team"}\n'
+        '{"Operation":"DLPRuleMatch","PolicyDetails":[{"PolicyName":"EU Payroll PII"}],'
+        '"SensitiveInfoTypeData":[{"SensitiveType":"Credit Card Number",'
+        '"DetectedValues":[{"Value":"4111 1111 1111 1111"}]}]}\n'
+        '{"user":{"userName":"j.smith@acme-corp.com"},"appName":"Box",'
+        '"description":"Impossible travel activity"}\n'
+        '{"deviceName":"ws-fin-07.acme-corp.local","rbacGroupName":"Finance-EU",'
+        '"cveId":"CVE-2026-1234","softwareName":"acrobat_reader_dc"}\n'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("gcp project masked", "acme-prod-1234" not in masked)
+    check("gcp resource path masked", "instances/web-prod-01" not in masked)
+    check("gcp service kept", "compute" in masked or "principalEmail" in masked)
+    check("azure blob path masked", "/payroll/2026-Q2.xlsx" not in masked)
+    check("o365 sharepoint site path masked", "/sites/Finance/" not in masked)
+    check("o365 document name masked", "payroll-2026.xlsx" not in masked)
+    check("o365 target group masked", "Finance Team" not in masked)
+    check("o365 operation kept", '"Operation":"FileDownloaded"' in masked)
+    check("purview policy name masked", "EU Payroll PII" not in masked)
+    check("purview detected value masked", "4111 1111 1111 1111" not in masked)
+    check("purview sensitive type kept", "Credit Card Number" in masked)
+    # "Box" names the SaaS vendor, not the customer: masking it would remove
+    # the one fact the impossible-travel alert is about.
+    check("mcas vendor app kept", '"appName":"Box"' in masked)
+    check("mcas verdict kept", "Impossible travel activity" in masked)
+    check("defender rbac group masked", "Finance-EU" not in masked)
+    check("defender cve kept", "CVE-2026-1234" in masked)
+
+
+def test_appliance_connector_logs():
+    # CylancePROTECT, Imperva WAF Gateway, Qualys VM, Infoblox NIOS,
+    # UniFi Security Gateway, pfSense, Symantec ProxySG, Cribl.
+    raw = (
+        "Jun 10 14:23:01 cylance CylancePROTECT: Event Type: Threat, "
+        "Event Name: threat_found, Device Name: WS-FIN-07, IP Address: (10.1.2.3), "
+        "File Name: payroll.exe, Zone Names: (Finance-EU), User Name: j.smith\n"
+        "CEF:0|Imperva Inc.|SecureSphere|14.7|Signature|SQL Injection|High|act=block "
+        "src=203.0.113.5 suser=j.smith sourceServiceName=acme-payments-web "
+        "cs1Label=Policy cs1=Acme-Prod-Policy\n"
+        "<HOST><ID>1234567</ID><IP>10.1.2.3</IP><DNS>ws-fin-07.acme-corp.local</DNS>"
+        "<NETBIOS>WS-FIN-07</NETBIOS><OS>Windows 11</OS></HOST>\n"
+        "Jun 10 14:23:01 infoblox-01 named[1234]: client 10.1.2.3#54321: "
+        "query: payroll.acme-corp.local IN A + (10.1.2.5)\n"
+        "Jun 10 14:23:01 USG-HQ-01 kernel: [WAN_LOCAL-default-D]IN=eth0 OUT= "
+        "SRC=203.0.113.5 DST=10.1.2.3 PROTO=TCP SPT=51122 DPT=22\n"
+        "Jun 10 14:23:01 pfsense-hq filterlog: 5,,,1000000103,em0,match,block,in,4,"
+        "0x0,,64,12345,0,DF,6,tcp,60,203.0.113.5,10.1.2.3,51122,443\n"
+        '{"time":"2026-06-10T14:23:01.123Z","channel":"clustercomm",'
+        '"host":"cribl-leader-01.acme.local","user":"jsmith"}\n'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("cylance device masked", "WS-FIN-07" not in masked)
+    check("cylance zone masked", "Finance-EU" not in masked)
+    check("cylance user masked", "j.smith" not in masked)
+    check("cylance event name kept", "Event Name: threat_found" in masked)
+    check("imperva service masked", "acme-payments-web" not in masked)
+    check("imperva cs1 policy masked", "Acme-Prod-Policy" not in masked)
+    check("imperva signature kept", "SQL Injection" in masked)
+    check("imperva vendor kept", "Imperva Inc.|SecureSphere" in masked)
+    check("qualys dns masked", "ws-fin-07.acme-corp.local" not in masked)
+    check("qualys netbios masked", "<NETBIOS>[HOST_" in masked)
+    check("qualys os kept", "<OS>Windows 11</OS>" in masked)
+    check("infoblox host masked", "infoblox-01" not in masked)
+    check("infoblox query masked", "payroll.acme-corp.local" not in masked)
+    check("unifi device masked", "USG-HQ-01" not in masked)
+    check("unifi rule kept", "[WAN_LOCAL-default-D]" in masked)
+    check("pfsense host masked", "pfsense-hq" not in masked)
+    check("pfsense verdict kept", "match,block,in" in masked)
+    check("cribl host masked", "cribl-leader-01.acme.local" not in masked)
+    check("cribl channel kept", '"channel":"clustercomm"' in masked)
+
+
+def test_phishing_evidence_is_not_masked():
+    # Proofpoint TAP: the recipient is customer data, but the subject line,
+    # the attachment name and the hash are the evidence the analyst is
+    # asking about — masking them would make the answer worthless.
+    raw = (
+        '{"sender":"attacker@evil-domain.test","recipient":["j.smith@acme-corp.com"],'
+        '"subject":"Q2 Payroll Invoice","senderIP":"203.0.113.5",'
+        '"messageParts":[{"filename":"invoice.doc","sha256":'
+        '"aabbccddeeff00112233445566778899aabbccddeeff001122334455667788ff"}]}'
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("proofpoint recipient masked", "j.smith@acme-corp.com" not in masked)
+    check("proofpoint sender masked", "attacker@evil-domain.test" not in masked)
+    check("proofpoint subject kept", '"subject":"Q2 Payroll Invoice"' in masked)
+    check("proofpoint attachment kept", '"filename":"invoice.doc"' in masked)
+    check("proofpoint hash kept",
+          "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788ff"
+          in masked)
+
+
+def test_connector_patterns_are_not_trigger_happy():
+    # The connector patterns are anchored on vendor keys; ordinary telemetry
+    # that merely mentions the same words must come through untouched.
+    raw = (
+        '{"appName":"Salesforce","organization":"Okta","policy":"allow",'
+        '"role":"member","account_id":"12","group":"0","topic":"a"}\n'
+        "arn:aws:securityhub:eu-west-1::product/aws/securityhub\n"
+        "Deleted C:\\Windows\\System32\\drivers\\etc\\hosts, exit code 0\n"
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("vendor app name kept", '"appName":"Salesforce"' in masked)
+    check("vendor org name kept", '"organization":"Okta"' in masked)
+    check("bare policy key kept", '"policy":"allow"' in masked)
+    check("short group id kept", '"group":"0"' in masked)
+    check("short account id kept", '"account_id":"12"' in masked)
+    check("short topic kept", '"topic":"a"' in masked)
+    check("vendor arn kept", "product/aws/securityhub" in masked)
+    check("system path kept", "C:\\Windows\\System32\\drivers\\etc\\hosts" in masked)
+
+
 def test_custom_patterns():
     raw = "Closed INC0012345 for customer CUST-99812 at 10:00"
     pats = [
@@ -1162,6 +1407,13 @@ if __name__ == "__main__":
     test_wazuh_logs()
     test_squid_and_watchguard_logs()
     test_qradar_offense_csv()
+    test_aws_connector_logs()
+    test_identity_provider_connector_logs()
+    test_saas_audit_connector_logs()
+    test_cloud_platform_connector_logs()
+    test_appliance_connector_logs()
+    test_phishing_evidence_is_not_masked()
+    test_connector_patterns_are_not_trigger_happy()
     test_custom_patterns()
     test_custom_patterns_persistence()
     test_conversation_mapping()

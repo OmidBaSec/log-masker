@@ -8,6 +8,34 @@ versions follow [Semantic Versioning][semver].
 
 ## [Unreleased]
 
+### Added
+- **Masking for cloud and SaaS log sources**: AWS CloudTrail, AWS Config,
+  AWS S3, AWS Security Hub, Okta, OneLogin, Duo Security, JumpCloud, Entra ID,
+  GitHub, Atlassian Jira, Zoom, DocuSign, Dynamics 365, Power Platform, GCP,
+  Azure Storage, Office 365, Purview, Defender for Cloud Apps, M365 Defender,
+  CylancePROTECT, Imperva WAF Gateway, Qualys VM, Infoblox NIOS, UniFi,
+  pfSense, Symantec ProxySG, Cribl and Proofpoint TAP — 23 patterns, in the
+  format each product actually sends.
+  - New placeholder types: `[ARN]`, `[ASSET]`, `[ORG]`, `[GROUP]`,
+    `[SUBJECT]`, `[KEYID]`, `[ACCTID]`.
+  - SaaS audit JSON puts the identity under a vendor key with a multi-word
+    value; the new patterns anchor on the quoted key and take the whole value,
+    so `"displayName":"John Smith"` is one placeholder instead of a masked
+    first name and a visible surname.
+  - Kept on purpose, because they are the question and not the customer:
+    phishing subject lines and attachment names, vendor product ARNs, vendor
+    app names (`"appName":"Box"`), and event taxonomies
+    (`"action":"repo.destroy"`, `"eventType":"user.session.start"`).
+
+### Fixed
+- **JSON Lines is no longer mistaken for a CSV export.** A JSONL log — the
+  wire format of most cloud connectors — has commas and quoted tokens like a
+  CSV row, so the first record was read as a header: the object's *keys* were
+  masked as though they were values, and the real values were left visible.
+  A CSV header row never starts with `{` or `[`.
+- Dotted lowercase enum values under an event key are no longer masked as
+  hostnames, so `"action":"repo.destroy"` survives.
+
 ### Changed
 - **Far fewer false positives on EDR alert JSON.** A Microsoft Defender
   incident went from 25 masked values to 14, with every remaining one genuinely
