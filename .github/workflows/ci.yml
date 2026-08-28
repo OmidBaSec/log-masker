@@ -183,6 +183,14 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
+    # On a pull_request event gitleaks-action asks the API for the PR's commit
+    # list to work out what to scan. The default token grants only contents /
+    # metadata / packages, so that call 403s and the action throws before it
+    # scans anything. A push event never needs it, which is why this stayed
+    # hidden until the repository's first pull request.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
