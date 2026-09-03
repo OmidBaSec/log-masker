@@ -16,6 +16,7 @@ Everything here runs locally; findings reference substrings of the masked
 payload only.
 """
 
+import ipaddress
 import math
 import re
 from collections import Counter
@@ -44,6 +45,14 @@ _SAFE_TOKENS = {
 }
 _SAFE_PREFIXES = ("cve-", "ms-", "kb-", "rfc-", "ta00", "t10", "t11",
                   "t12", "t13", "t14", "t15", "t16")
+
+
+def _is_loopback(value: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_unspecified
 
 
 def _entropy(s: str) -> float:
@@ -112,6 +121,11 @@ def scan(masked: str,
     # 3. IP / email leftovers (skipped when that category is off by choice).
     if "network" in cats:
         for val, count in Counter(_IPV4.findall(text)).items():
+            # The masker keeps loopback on purpose — every host is 127.0.0.1
+            # to itself — so blocking the send over it would put a hard stop
+            # in front of every "Get-NetTCPConnection" paste.
+            if _is_loopback(val):
+                continue
             add("ip_address", "high", val, count,
                 "Looks like an IPv4 address that escaped masking.")
     if "identities" in cats:
@@ -134,6 +148,10 @@ def scan(masked: str,
                     and any(c.isalpha() for c in tok)):
                 continue
             if _entropy(tok) < 3.3:
+                continue
+            # WMI/CIM class names are long, mixed and high-entropy, and every
+            # PowerShell paste is full of them.
+            if tok.startswith(("Win32_", "MSFT_", "CIM_", "Msvm_")):
                 continue
             add("secret_like", "medium", tok, text.count(tok),
                 "High-entropy token — possible credential or API key.")

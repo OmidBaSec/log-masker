@@ -35,6 +35,68 @@ versions follow [Semantic Versioning][semver].
   A CSV header row never starts with `{` or `[`.
 - Dotted lowercase enum values under an event key are no longer masked as
   hostnames, so `"action":"repo.destroy"` survives.
+- **PowerShell coverage.** A Windows investigation is conducted in PowerShell,
+  so a transcript, a script-block log (event 4104) or a pasted console session
+  is one of the most common things to hand this tool — and PowerShell puts its
+  identifiers in three shapes no `key=value` pattern could reach:
+  - **Parameter arguments**, separated by a space rather than `=` and often a
+    list: `-ComputerName WKS-01,WKS-02`, `-Credential`, `-Identity`,
+    `-UserName`, `-SamAccountName`, `-Mailbox`, `-ResourceGroupName`. One
+    placeholder per list item. `-Name`/`-DisplayName` are resolved from the
+    cmdlet on the line, so `New-ADUser -Name "Petra Vogel"` is a person,
+    `Get-AzVM -Name vm-web01` is a machine, and `Get-Service -DisplayName
+    "Print Spooler"` is neither.
+  - **`Format-Table` output**: the row of dashes gives the column boundaries
+    and the header says what the cells hold. `Get-LocalUser` and `Get-ADUser`
+    tables are masked cell by cell; `Get-Service` and `Get-Process` are not.
+  - **`-EncodedCommand`** base64 blobs, decoded locally and masked only when
+    the decoding holds something that would have been masked in the clear —
+    the same answer either way, which is what makes keeping the rest safe.
+  - Plaintext credentials as PowerShell writes them: `ConvertTo-SecureString
+    'literal'`, `-Password`, `-AccessToken`, `Bearer` tokens, and the
+    positional password of `net use … /user:DOM\svc <password>`.
+  - Transcript headers and filenames, `Format-List` person fields
+    (`DisplayName`, `GivenName`, `Surname`, `PrimaryOwnerName`), AD attributes
+    (`-GivenName`, `-Surname`, `-StreetAddress`), `Get-Credential "DOM\user"`,
+    SQL connection strings (`User ID=`), `az login -p`, Azure resource names
+    (`-VaultName`, `-ResourceGroupName`) and Graph filter strings.
+  - Asset names in prose, where a keyword anchors them and the value carries
+    the shape of one: `logged into host WORKSTATION-88`.
+
+### Fixed
+- **A masked value could still be sent in the clear elsewhere in the same
+  paste.** A pattern anchors on one shape of a name — `Machine: WKS-01` in a
+  transcript header — while two lines down `hostname` echoes a bare `WKS-01`
+  that nothing marks. The masker now takes a second pass over every value it
+  has already decided is sensitive, including the short form of an FQDN and
+  the domain half of `DOMAIN\user`. This is the difference between "the
+  patterns matched" and "the value is gone".
+- `$password = ConvertTo-SecureString 'Wint3r!2026'` masked the *cmdlet name*
+  and left the credential standing next to it.
+- `\\FS-ARCHIVE-01\payroll$` was shredded into a bogus user
+  `ARCHIVE-01\payroll`; `$env:LOGONSERVER` (`\\DC01`, no trailing separator)
+  and provider-qualified paths (`FileSystem::\\NAS-01\share`) were missed
+  entirely.
+- A 13–16 digit run is only a credit card if it passes the Luhn check digit —
+  a PowerShell transcript's `Start time: 20260902141233` is a timestamp.
+- One value no longer gets two placeholders because two patterns disagreed
+  about its label, and the label chosen is the more specific one.
+- The pre-send leak guard blocked on `127.0.0.1`, which the masker keeps by
+  design — a hard stop in front of every `Get-NetTCPConnection` paste.
+- `[System.Net.Dns]`, `$wc.Proxy`, `Microsoft.PowerShell.Core\FileSystem::`
+  and built-in groups like `CORP\Domain Users` are no longer masked.
+- `-Password (ConvertTo-SecureString "…")` masked the cmdlet *and* swallowed
+  the opening parenthesis, leaving the password beside it — and the new
+  propagation pass then copied that mistake to every other use of the cmdlet.
+- A `-match` pattern is not a log line: `"Account Name:\s+(?<user>\w+)"` was
+  masked down to its regex escape, corrupting the command.
+- `Server=tcp:…` read `tcp` as a hostname; `User ID=` in a SQL connection
+  string was not read as a username at all.
+- The bare word form of a NetBIOS domain is no longer chased through prose
+  when it is an ordinary word (`STORAGE`, `FINANCE`); the qualified
+  `STORAGE\root_backup` is still masked in full.
+- The leak guard no longer warns about WMI/CIM class names (`Win32_…`), which
+  are long and high-entropy and appear in every PowerShell paste.
 
 ### Changed
 - **Far fewer false positives on EDR alert JSON.** A Microsoft Defender

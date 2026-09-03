@@ -276,12 +276,57 @@ just paste and the preview updates automatically:
 - **VMware** (EMC VMware / ESXi / vCenter) — ISO-timestamp syslog header
   hostnames, `User x@ip logged in`, dotted-domain logins
   (`ACME.LOCAL\user`), UNC server names (`\\fileserver\share`).
+- **PowerShell** (transcripts, script-block logs / event 4104, pasted console
+  sessions) — PowerShell hides its identifiers in three shapes no `key=value`
+  pattern can reach, and all three are handled:
+  * **Parameters**, which are separated from their argument by a *space* and
+    may take a list — `-ComputerName WKS-01,WKS-02`, `-Credential CORP\svc`,
+    `-Identity a.novak`, `-UserName`, `-SamAccountName`, `-Mailbox`,
+    `-ResourceGroupName`. Each list item gets its own placeholder, so two
+    machines never collapse into one. `-Name` and `-DisplayName` are read from
+    the cmdlet on the line: a person in `New-ADUser`, a machine in `Get-AzVM`,
+    and left alone in `Get-Service -DisplayName "Print Spooler"`.
+  * **`Format-Table` output**, where the row of dashes gives the column
+    boundaries and the header is the only clue to what a cell holds.
+    `Get-LocalUser` and `Get-ADUser` tables are masked cell by cell;
+    `Get-Service` and `Get-Process` tables are left alone.
+  * **`-EncodedCommand`** base64 blobs — decoded locally, and masked only when
+    the decoding holds something that would have been masked in the clear.
+  Plaintext credentials are caught in the forms PowerShell writes them:
+  `ConvertTo-SecureString 'literal'`, `-Password`, `-AccessToken`, `Bearer`
+  tokens, SQL connection strings (`User ID=`/`Password=`), `az login -p`, and
+  the positional password of `net use … /user:DOM\svc <password>` — while the
+  cmdlet being invoked stays readable. Transcript headers (`Username:`,
+  `Machine:`) and filenames (`PowerShell_transcript.WKS-01.…`), `Format-List`
+  person fields (`DisplayName`, `GivenName`, `Surname`), AD attributes
+  (`-GivenName`, `-Surname`, `-StreetAddress`), `Get-Credential "DOM\user"`,
+  Azure resources (`-VaultName`, `-ResourceGroupName`) and Graph filters
+  (`-Filter "displayName eq 'X'"`) are extracted too.
 - **Mail & proxies** (Postfix, reverse proxies) — addresses in `from=<…>` /
   `to=<…>`, relay hosts, and the authuser field of Apache/nginx combined
   access logs.
 
 Each unique real value maps to a stable placeholder (`[EMAIL_1]`, `[IP_3]`, …),
-so the same value reads consistently to the AI.
+so the same value reads consistently to the AI — one placeholder per value,
+even when two patterns disagree about whether it is a user or a host.
+
+**Once a value is masked anywhere, it is masked everywhere in that paste.** A
+pattern can only anchor on one shape of a name: a transcript header says
+`Machine: WKS-01`, and two lines down `hostname` echoes a bare `WKS-01` that
+nothing marks as anything. The masker takes a second pass for every value it
+has already decided is sensitive, including the short form of an FQDN and the
+domain half of `DOMAIN\user`.
+
+An asset name is also picked up from prose when a keyword anchors it —
+`logged into host WORKSTATION-88`, `connect to server SRV-DB-01` — since the
+value has to look like an asset name for the match to count.
+
+What no pattern can reach is a name with nothing around it at all: a bare
+`SRV-SQL-03` in a `TrustedHosts` list, `Login on SRV-DC02` in a mail subject,
+or a person's name inside a free-text description column. The [pre-send leak
+guard](#pre-send-leak-guard) flags those as `host_like` warnings before
+anything is sent, and **Custom terms** lets you pin your own asset names
+permanently.
 
 ### Saved regex patterns (teach it once, reuse forever)
 
@@ -474,6 +519,16 @@ the AI's answer useless — so these survive into the text that is sent:
   `"eventType":"user.session.start"`, `"eventSource":"signin.amazonaws.com"`.
   These dotted lowercase enums say *what happened*, and would otherwise be
   read as hostnames.
+* **.NET type names, PowerShell variables and provider paths** —
+  `[System.Net.Dns]`, `New-Object System.Management.Automation.PSCredential`,
+  `$wc.Proxy`, `Microsoft.PowerShell.Core\FileSystem::`. They are dotted and
+  backslashed like a hostname or a `DOMAIN\user` and name nothing but the
+  runtime.
+* **Built-in groups and services** — `Domain Admins`, `Authenticated Users`,
+  `Print Spooler`, `Windows Update`.
+* **Numbers that only look like cards** — a 13–16 digit run is masked as a
+  credit card only if it passes the Luhn check digit, so a PowerShell
+  transcript's `Start time: 20260902141233` stays readable.
 
 Tenant ids, Entra device ids, EDR device ids, cloud account numbers, and
 link-local addresses *are* masked: they identify the organisation or the

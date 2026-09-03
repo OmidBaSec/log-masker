@@ -11,6 +11,8 @@ Nothing here makes a network call. Only the masked text should ever leave the
 machine; the mapping stays local.
 """
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -67,6 +69,7 @@ _NOT_HOSTS = {
     "info", "warn", "warning", "error", "err", "debug", "notice", "trace",
     "fatal", "crit", "critical", "alert", "emerg", "panic", "audit", "verbose",
     "users", "windows", "system32", "programdata", "program files", "temp",
+    "tcp", "udp", "ssl", "tls", "np", "lpc",
 }
 
 # Built-in Windows accounts / placeholder values that appear in event-log
@@ -78,6 +81,11 @@ _WINDOWS_BUILTIN_VALUES = {
     "administrator", "guest", "public", "default", "default user",
     "defaultuser0", "all users", "local system", "trustedinstaller",
     "root", "https", "http", "ftp", "unknown", "none", "true", "false",
+    # Built-in groups, as "-Identity" and ACL output name them.
+    "domain users", "domain admins", "domain computers", "domain controllers",
+    "enterprise admins", "schema admins", "authenticated users", "everyone",
+    "administrators", "remote desktop users", "backup operators",
+    "account operators", "server operators", "print operators", "power users",
 }
 
 # Well-known SaaS applications and cloud services. When a SaaS audit log names
@@ -170,8 +178,30 @@ def _compile_patterns():
     # value only. The optional quote before the separator covers JSON keys:
     #   "password": "hunter2"
     p.append(("secrets", "SECRET", re.compile(
-        r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|auth|community)"
+        r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|auth|community"
+        r"|client[_-]?id)"
         r"[\"']?\s*[=:]\s*[\"']?([^\s\"',;]+)")))
+    # Plaintext credentials as PowerShell writes them: the literal handed to
+    # ConvertTo-SecureString, a -Password/-AccessToken argument, and the
+    # positional password of "net use ... /user:DOM\\svc <password>". None of
+    # these is a key=value pair, so the generic secret pattern above cannot see
+    # them — and a script-block log (event 4104) records the password verbatim.
+    p.append(("secrets", "SECRET", re.compile(
+        r"(?i)ConvertTo-SecureString\s+(?:-(?:String|AsPlainText)\s+)*"
+        r"[\"']([^\"'\r\n]+)[\"']")))
+    p.append(("secrets", "SECRET", re.compile(
+        r"(?i)(?<![\w-])--?(?:password|passwd|pwd|accesstoken|api[_-]?key"
+        r"|token|secret|clientsecret|sharedkey|passphrase)[ \t]+"
+        r"[\"']?([^\s\"',;]+)")))
+    p.append(("secrets", "SECRET", re.compile(
+        r"(?i)/user:\S+[ \t]+([^\s\"',;]+)")))
+    # "-p" names the service-principal secret in this one command and a port
+    # in plenty of others, so it is read here and nowhere else.
+    p.append(("secrets", "SECRET", re.compile(
+        r"(?i)\baz[ \t]+login\b[^\r\n]*?[ \t]-p[ \t]+[\"']?([^\s\"']+)")))
+    # "Authorization = \"Bearer eyJ…\"" in an -Headers hashtable.
+    p.append(("secrets", "SECRET", re.compile(
+        r"(?i)\bBearer[ \t]+([A-Za-z0-9._\-]{16,})")))
     # Device serial numbers (SonicWALL sn=, generic serial=).
     p.append(("secrets", "SERIAL", re.compile(
         r"(?i)\b(?:serial(?:[ _-]?(?:no|num|number))?|sn)=[\"']?"
@@ -293,7 +323,7 @@ def _compile_patterns():
     # the key covers Symantec EP's "User name:"; `identity` covers Meraki.
     # `@` in the value keeps Cisco AMP's "user":"j.smith@WS07" in one token.
     p.append(("identities", "USER", re.compile(
-        r"(?i)(?:user(?:[ _-]?name|[_-]?id)?|usr[_-]?name|usr|login"
+        r"(?i)(?:user(?:[ _-]?name|[ _-]?id)?|usr[_-]?name|usr|login"
         r"|account(?:[ _-]?name)?|uid|identity|target|sAMAccountName)"
         r"[\"']?\s*[=:]\s*[\"']?([A-Za-z0-9._\\@\-]{2,})")))
     # Domain key=value pairs (M365 Defender "AccountDomain":"acme",
@@ -301,6 +331,21 @@ def _compile_patterns():
     p.append(("identities", "DOMAIN", re.compile(
         r"(?i)(?:account[ _-]?domain|domain[ _-]?name|logon[ _-]?domain)"
         r"[\"']?\s*[=:]\s*[\"']?([A-Za-z0-9._\-]{2,})")))
+    # PowerShell Format-List output — "Get-ADUser -Properties * | fl" and
+    # every Exchange/Graph cmdlet print one aligned "Field : value" per line.
+    # Bare "Name" is deliberately absent: in Get-Process it is a binary.
+    p.append(("identities", "USER", re.compile(
+        r"(?im)^[ \t]*(?:DisplayName|GivenName|Surname|FullName"
+        r"|PrimaryOwnerName|Manager|EmployeeID|PrincipalName|Alias)"
+        r"[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$")))
+    p.append(("identities", "USER", re.compile(
+        r"(?i)Get-Credential[ \t]+(?:-UserName[ \t]+)?[\"']([^\"'\r\n]+)[\"']")))
+    # Microsoft Graph and Exchange filter strings, as -Filter takes them:
+    #   Get-MgUser -Filter "displayName eq 'Petra Vogel'"
+    p.append(("identities", "USER", re.compile(
+        r"(?i)\b(?:displayName|userPrincipalName|mail|givenName|surname"
+        r"|samAccountName|onPremisesSamAccountName|windowsLiveID)"
+        r"\s+-?eq\s+[\"']([^\"'\r\n]+)[\"']")))
     # user@IP convention (QRadar SIM Audit "j.smith@10.1.1.100", ESXi).
     p.append(("identities", "USER", re.compile(
         r"\b([A-Za-z][A-Za-z0-9._\-]{1,})@(?=(?:\d{1,3}\.){3}\d)")))
@@ -356,7 +401,10 @@ def _compile_patterns():
     # "Windows\System32" users — common in Sysmon Image/CommandLine).
     # (`\\+` tolerates JSON-escaped "ACME\\j.smith".)
     p.append(("identities", "USER", re.compile(
-        r"(?<![\\/])\b[A-Za-z0-9][A-Za-z0-9.\-]+\\+[A-Za-z0-9._\-]{2,}\b(?![\\/])")))
+        r"(?<![\\/\-.])\b[A-Za-z0-9][A-Za-z0-9.\-]+\\+[A-Za-z0-9._\-]{2,}\b(?![\\/])"
+        # "CORP\Domain Users" is a built-in group: match neither half of it
+        # here, and let the domain be masked as a domain by itself.
+        r"(?!\ +(?:Users|Admins|Computers|Controllers|Operators|Guests)\b)")))
     # International phone numbers (E.164-ish, must start with + to keep the
     # false-positive rate near zero in machine logs).
     p.append(("identities", "PHONE", re.compile(
@@ -455,6 +503,20 @@ def _compile_patterns():
     # Qualys VM asset exports (XML): <DNS>, <NETBIOS>, <FQDN> elements.
     p.append(("network", "HOST", re.compile(
         r"(?i)<(?:NETBIOS|DNS|DNS_DATA|FQDN)>([^<]+)<")))
+    # "logged into host WORKSTATION-88", "connect to server SRV-DB-01" — prose
+    # rather than a field, so the keyword alone is not enough: the value must
+    # also carry the shape of an asset name. The keyword is case-insensitive,
+    # the value deliberately is not, or every "host is" reads as a hostname.
+    p.append(("network", "HOST", re.compile(
+        r"(?:(?i:host|hostname|computer|machine|workstation|server|device))"
+        r"[ \t]+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+"
+        # ... and its domain, if it is written as an FQDN. Without this the
+        # span stops at "SRV-SQL-03" and sends ".corp.acme.local" in the clear.
+        r"(?:\.[A-Za-z0-9][A-Za-z0-9\-]*)*)\b")))
+    # A PowerShell transcript is named after the machine it was taken on:
+    #   PowerShell_transcript.WKS-FIN-042.Xy3kR2p1.20260902141233.txt
+    p.append(("network", "HOST", re.compile(
+        r"(?i)PowerShell_transcript[._]([A-Za-z0-9][A-Za-z0-9\-]+)")))
     # dhcpd: hostname reported in parens — DHCPACK on 10.1.2.55 to
     # 58:40:4e:ab:3d:4e (WS-FIN-07) via eth0
     p.append(("network", "HOST", re.compile(
@@ -463,9 +525,13 @@ def _compile_patterns():
     # path starts a token; inside a JSON-escaped Windows path every separator
     # is a doubled backslash ("C:\\Windows\\System32\\WindowsPowerShell"), so
     # require that the pair is not preceded by a word character or a drive
-    # colon — otherwise every path segment looks like a file server.
+    # colon — otherwise every path segment looks like a file server. Two to
+    # four backslashes so a UNC path that is itself JSON-escaped still
+    # matches, and the server may end the token: $env:LOGONSERVER is
+    # nothing but \\\\DC01.
     p.append(("network", "HOST", re.compile(
-        r"(?<![\\:\w])\\\\([A-Za-z0-9][A-Za-z0-9._\-]+)(?=\\)")))
+        r"(?:(?<=::)|(?<![:\w]))\\{2,4}([A-Za-z0-9][A-Za-z0-9._\-]+)"
+        r"(?=\\|[\s\"',;)\]]|$)")))
     # Microsoft Defender for Cloud alerts.
     p.append(("network", "HOST", re.compile(
         r"(?i)\"compromised[_-]?entity\"\s*:\s*\"([^\"]+)\"")))
@@ -536,6 +602,20 @@ _KEEP_PATTERNS = [
                r"|action|operation(?:[_-]?name)?|method[_-]?name"
                r"|service[_-]?name|activity[_-]?type|category[_-]?type)\""
                r"\s*:\s*\"([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)\""),
+    # .NET type names and PowerShell variables. "[System.Net.Dns]",
+    # "New-Object System.Management.Automation.PSCredential" and "$wc.Proxy"
+    # are dotted like a hostname and name nothing but the runtime.
+    re.compile(r"\[(?:System|Microsoft|Windows|Net|Automation|PSObject)"
+               r"\.[A-Za-z0-9_.\[\]]+\]"),
+    re.compile(r"(?i)New-Object[ \t]+(?:-TypeName[ \t]+)?"
+               r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)"),
+    re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"),
+    # PowerShell provider paths: "Microsoft.WSMan.Management\WSMan::localhost",
+    # "Microsoft.PowerShell.Core\FileSystem::\\NAS-01\Finance". The provider
+    # half names the runtime; what follows "::" does not, and is deliberately
+    # left outside the protected span.
+    re.compile(r"\b(?:Microsoft|System)\.[A-Za-z0-9_.]+"
+               r"(?:\\[A-Za-z0-9_]+)?(?=::)"),
 ]
 
 
@@ -575,6 +655,15 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
      "Numeric user ids (\"user_id\":123456)"),
     ("secret-kv", "Generic secrets",
      "password= / token= / community= values (key=value and JSON)"),
+    ("ps-securestring", "PowerShell",
+     "The literal passed to ConvertTo-SecureString"),
+    ("ps-secret-param", "PowerShell",
+     "-Password / -AccessToken / -ApiKey parameter arguments"),
+    ("net-use-password", "Windows CLI",
+     "The positional password of 'net use ... /user:DOM\\svc <password>'"),
+    ("az-login-secret", "Azure CLI",
+     "The service-principal secret of 'az login -p ...'"),
+    ("bearer-token", "Generic secrets", "Bearer tokens in Authorization values"),
     ("serial-kv", "SonicWALL & devices", "Device serial numbers (sn=, serial=)"),
     ("watchguard-serial", "WatchGuard Fireware",
      "Device serial after the syslog hostname"),
@@ -616,6 +705,12 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
      "user= username: usrName= usr= account= identity= target= …"),
     ("domain-kv", "Generic key=value / JSON",
      "AccountDomain / Domain name / logon_domain values"),
+    ("get-credential-user", "PowerShell",
+     "The account named in Get-Credential \"DOM\\user\""),
+    ("graph-filter-user", "Microsoft Graph & Exchange",
+     "-Filter \"displayName eq 'X'\" comparisons"),
+    ("ps-person-field", "PowerShell Format-List",
+     "DisplayName / GivenName / Surname / PrimaryOwnerName lines"),
     ("user-at-ip", "QRadar SIM Audit & VMware", "user@10.0.0.1 actor tokens"),
     ("epoxml-user", "McAfee ePO XML", "<UserName>…</UserName> elements"),
     ("epoxml-domain", "McAfee ePO XML", "<DomainName>…</DomainName> elements"),
@@ -670,6 +765,10 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
     ("epoxml-host", "McAfee ePO XML", "<MachineName>…</MachineName> elements"),
     ("qualys-xml-host", "Qualys VM",
      "<DNS> / <NETBIOS> / <FQDN> elements of asset exports"),
+    ("host-in-prose", "Generic network",
+     "Asset-shaped names after 'host'/'server'/'workstation' in prose"),
+    ("ps-transcript-name", "PowerShell",
+     "The computer name inside a PowerShell_transcript.<host>.… filename"),
     ("dhcpd-host", "Linux DHCP", "Hostname in parens: (WS-FIN-07) via eth0"),
     ("unc-host", "UNC paths", "Server name in \\\\fileserver\\share paths"),
     ("compromised-entity", "Microsoft Defender for Cloud",
@@ -1018,10 +1117,431 @@ def _csv_spans(text: str):
     return spans
 
 
+# PowerShell verbs, for telling a cmdlet name from a password. "$password =
+# ConvertTo-SecureString ..." otherwise makes the masker redact the cmdlet and
+# leave the credential standing next to it.
+_PS_VERBS = (
+    "get", "set", "new", "add", "remove", "convertto", "convertfrom", "invoke",
+    "import", "export", "start", "stop", "select", "where", "foreach", "out",
+    "write", "read", "test", "enter", "exit", "connect", "disconnect",
+    "enable", "disable", "update", "install", "uninstall", "copy", "move",
+    "rename", "restart", "join", "split", "format", "measure", "sort", "group",
+    "send", "receive", "register", "unregister", "resolve", "search", "find",
+    "clear", "push", "pop", "compare", "show", "wait", "restore", "save",
+)
+
+
+# "$cred", "$_", "@{Authorization=...}", "-Server": PowerShell syntax standing
+# where a value would be, not the value itself.
+_PS_NOT_A_VALUE = re.compile(r"^(?:\$[A-Za-z_]\w*|\$_|@[{(]|-[A-Za-z])")
+# Same, minus the variable: a secret is the one thing we would rather mask
+# twice than miss once, and 'ConvertTo-SecureString $ecret1' cannot be told
+# from a variable by its shape. Masking a variable name costs nothing.
+_PS_NOT_A_SECRET = re.compile(r"^(?:@[{(]|-[A-Za-z])")
+
+
+def _luhn_ok(digits: str) -> bool:
+    """The check digit every real card number carries. A 14-digit run that
+    fails it is a timestamp, an order number or an epoch — not a card."""
+    total, alt = 0, False
+    for ch in reversed(digits):
+        d = ord(ch) - 48
+        if alt:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        alt = not alt
+    return total % 10 == 0
+
+
+# ---------------------------------------------------------------------------
+# PowerShell.
+#
+# PowerShell is three shapes at once that no key=value pattern can follow:
+#
+#   * a parameter and its argument are separated by a space, not "=" or ":",
+#     and the argument may be a comma-separated list — "-ComputerName A,B";
+#   * results print as a space-aligned table under a row of dashes, where the
+#     column header is the only clue to what the cells hold;
+#   * a whole command can travel base64-encoded, where nothing is visible at
+#     all until it is decoded.
+#
+# All three are collected here as explicit spans, claimed before the regex
+# patterns run. This matters more than it looks: PowerShell is how a Windows
+# investigation is actually conducted, so a transcript or a script-block log
+# is one of the most common things to paste, and every device name, account
+# and credential in it arrives in one of these three shapes.
+# ---------------------------------------------------------------------------
+
+# Parameters whose argument names a person or a machine. Deliberately not
+# -Filter/-SearchBase/-Path: those carry their own patterns (DN, profile path)
+# and would swallow half a query.
+_PS_PARAM_LABELS = {
+    "computername": "HOST", "cn": "HOST", "pscomputername": "HOST",
+    "hostname": "HOST", "dnshostname": "HOST", "machinename": "HOST",
+    "server": "HOST", "servername": "HOST", "serverinstance": "HOST",
+    "node": "HOST", "vmname": "HOST", "clustername": "HOST",
+    "smtpserver": "HOST", "connectionuri": "HOST",
+    "resourcegroup": "RESOURCE", "resourcegroupname": "RESOURCE",
+    "username": "USER", "user": "USER", "credential": "USER",
+    "identity": "USER", "samaccountname": "USER", "mailbox": "USER",
+    "userprincipalname": "USER", "accountname": "USER", "owner": "USER",
+    "member": "USER", "sender": "USER", "manager": "USER",
+    "givenname": "USER", "surname": "USER", "firstname": "USER",
+    "lastname": "USER", "emailaddress": "USER",
+    "vaultname": "RESOURCE", "keyvaultname": "RESOURCE",
+    "storageaccountname": "RESOURCE", "workspacename": "RESOURCE",
+    "subscriptionname": "RESOURCE",
+    "streetaddress": "ADDRESS", "postalcode": "ADDRESS",
+}
+# PowerShell pluralises freely: -Members, -ComputerNames, -Identities.
+for _sing, _lbl in list(_PS_PARAM_LABELS.items()):
+    _PS_PARAM_LABELS.setdefault(_sing + "s", _lbl)
+_PS_PARAM_LABELS["identities"] = "USER"
+_PS_PARAM_LABELS["mailboxes"] = "USER"
+
+# "-Name" and "-DisplayName" mean a person on one cmdlet and a Windows service
+# on the next ("Get-Service -DisplayName 'Print Spooler'"), so they are read
+# from the cmdlet on the same line rather than trusted on their own.
+_PS_CONTEXT_PARAMS = ("name", "displayname")
+_PS_NAME_CMDLET = re.compile(
+    r"(?i)(?<![\w-])[A-Za-z]+-(?:AD|Az|Mg|Msol|Local)?"
+    r"(User|ADUser|Mailbox|Person|Contact|Group|ADGroup"
+    r"|VM|Computer|ADComputer)\b")
+_PS_NAME_LABELS = {"user": "USER", "aduser": "USER", "mailbox": "USER",
+                   "person": "USER", "contact": "USER", "group": "USER",
+                   "adgroup": "USER", "vm": "HOST", "computer": "HOST",
+                   "adcomputer": "HOST"}
+_PS_PARAM = re.compile(r"(?i)(?<![\w-])--?([A-Za-z][A-Za-z\-]{1,23})[ \t]+"
+                       r"(?=[\"']?[A-Za-z0-9])")
+_PS_ITEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\\@$\-]*")
+
+
+def _ps_param_spans(text: str):
+    """Spans for "-ComputerName WKS-01,WKS-02" style arguments, one span per
+    list item so two machines never collapse into one alias."""
+    out = []
+    n = len(text)
+    for m in _PS_PARAM.finditer(text):
+        name = m.group(1).lower().replace("-", "")
+        label = _PS_PARAM_LABELS.get(name)
+        if not label and name in _PS_CONTEXT_PARAMS:
+            line = text[text.rfind("\n", 0, m.start()) + 1:m.start()]
+            cmdlet = _PS_NAME_CMDLET.search(line)
+            label = _PS_NAME_LABELS.get(cmdlet.group(1).lower()) if cmdlet \
+                else None
+        if not label:
+            continue
+        i = m.end()
+        while i < n:
+            if text[i] in "\"'":
+                # A quoted argument is one value even with a space in it:
+                # -Identity "Domain Admins", -Name "Petra Vogel".
+                close = text.find(text[i], i + 1)
+                if close == -1:
+                    break
+                start, end, i = i + 1, close, close + 1
+            else:
+                item = _PS_ITEM.match(text, i)
+                if not item:
+                    break
+                start, end, i = item.start(), item.end(), item.end()
+            value = text[start:end]
+            # An email or an IP handed to -Identity/-ComputerName keeps its
+            # own, more precise label.
+            if value and not (_FULL_IP.fullmatch(value)
+                              or _FULL_EMAIL.fullmatch(value)):
+                out.append((start, end, value, label))
+            if i < n and text[i] == ",":       # the list continues
+                i += 1
+                while i < n and text[i] in " \t":
+                    i += 1
+                continue
+            break
+    return out
+
+
+# Table column headers, checked before the CSV header rules.
+_PS_COL_USER = ("samaccountname", "userprincipalname",
+                "givenname", "surname", "fullname", "primaryownername",
+                "principalname", "alias", "emailaddress", "mailbox",
+                "accountname", "member", "manager", "identity")
+# "DisplayName" and a bare "Name" are only readable from their neighbours.
+_PS_COL_CONTEXT = ("displayname", "name")
+_PS_COL_HOST = ("dnshostname", "pscomputername", "machinename", "servername",
+                "computername", "hostname", "vmname", "nodename")
+# A bare "Name" column is only readable from its neighbours: in Get-LocalUser
+# it is a person, in Get-CimInstance Win32_ComputerSystem it is the machine,
+# and in Get-Process it is a binary that must be left alone.
+_PS_ACCOUNT_TABLE = ("enabled", "principalsource", "samaccountname",
+                     "passwordrequired", "userprincipalname", "objectclass",
+                     "lastlogon", "sid", "surname", "givenname")
+_PS_MACHINE_TABLE = ("primaryownername", "manufacturer", "model",
+                     "osarchitecture", "totalphysicalmemory", "dnshostname",
+                     "domain")
+# Tables about services, processes and files. Their Name and DisplayName
+# columns are software, not people: masking "Print Spooler" out of
+# Get-Service protects nobody and makes the output unreadable.
+_PS_SOFTWARE_TABLE = ("status", "handles", "cpu", "processname", "starttype",
+                      "servicetype", "lastwritetime", "length", "mode",
+                      "version", "installdate", "publisher")
+_PS_RULER = re.compile(r"^[ \t]*-{2,}(?:[ \t]+-{2,})+[ \t]*$")
+
+
+def _ps_column_label(header: str, siblings) -> str:
+    h = re.sub(r"[^a-z]", "", header.lower())
+    if not h:
+        return None
+    if any(x in h for x in _PS_COL_USER):
+        return "USER"
+    if any(x in h for x in _PS_COL_HOST):
+        return "HOST"
+    if h in _PS_COL_CONTEXT:
+        if any(x in sib for sib in siblings for x in _PS_SOFTWARE_TABLE):
+            return None
+        if any(x in sib for sib in siblings for x in _PS_ACCOUNT_TABLE):
+            return "USER"
+        if any(x in sib for sib in siblings for x in _PS_MACHINE_TABLE):
+            return "HOST"
+        return None
+    return _csv_column_label(header)
+
+
+def _ps_table_spans(text: str):
+    """Spans for the sensitive columns of a Format-Table block: the row of
+    dashes gives the column boundaries, the line above gives their names."""
+    lines = text.split("\n")
+    offsets, pos = [], 0
+    for line in lines:
+        offsets.append(pos)
+        pos += len(line) + 1
+
+    spans = []
+    for idx, line in enumerate(lines):
+        row = line.rstrip("\r")
+        if idx == 0 or not _PS_RULER.match(row):
+            continue
+        header = lines[idx - 1].rstrip("\r")
+        if not header.strip():
+            continue
+        # Column boundaries from the dashes; the last column runs to the end
+        # of each row, since PowerShell truncates trailing whitespace.
+        cols = [(mm.start(), mm.end()) for mm in re.finditer(r"-{2,}", row)]
+        if len(cols) < 2:
+            continue
+        bounds = []
+        for i, (cs, _ce) in enumerate(cols):
+            end = cols[i + 1][0] - 1 if i + 1 < len(cols) else 10 ** 9
+            bounds.append((cs, end))
+        names = [header[cs:min(ce, len(header))].strip() for cs, ce in bounds]
+        siblings = [re.sub(r"[^a-z]", "", nm.lower()) for nm in names]
+        labels = [_ps_column_label(nm, siblings) for nm in names]
+        if not any(labels):
+            continue
+        for row_idx in range(idx + 1, len(lines)):
+            body = lines[row_idx].rstrip("\r")
+            if not body.strip() or _PS_RULER.match(body):
+                break
+            for (cs, ce), label in zip(bounds, labels):
+                if not label or cs >= len(body):
+                    continue
+                s, e = cs, min(ce, len(body))
+                while s < e and body[s] in " \t":
+                    s += 1
+                while e > s and body[e - 1] in " \t":
+                    e -= 1
+                # A cell wider than its column overflows to the right instead
+                # of wrapping, so the column boundary can fall inside a value:
+                # take the whole token, or half a hostname is masked and the
+                # other half is sent.
+                while e < len(body) and body[e] not in " \t":
+                    e += 1
+                while s > 0 and body[s - 1] not in " \t":
+                    s -= 1
+                v = body[s:e]
+                # Plain IPs / emails keep their own, more precise labels, and
+                # a cell with no letter or digit ("{}", "...") names nothing.
+                if not v or _FULL_IP.fullmatch(v) or _FULL_EMAIL.fullmatch(v):
+                    continue
+                if not re.search(r"[A-Za-z0-9]", v):
+                    continue
+                spans.append((offsets[row_idx] + s, offsets[row_idx] + e,
+                              v, label))
+    return spans
+
+
+# powershell.exe -enc <base64>. The blob is UTF-16LE base64 and hides whatever
+# it likes — an internal IP, a credential, a share path.
+_PS_ENCODED = re.compile(
+    r"(?i)(?<![\w-])-(?:e|ec|enc|encoded|encodedcommand)[ \t]+"
+    r"([A-Za-z0-9+/]{40,}={0,2})")
+
+
+def _decode_ps_command(blob: str) -> str:
+    try:
+        raw = base64.b64decode(blob + "=" * (-len(blob) % 4), validate=True)
+    except (ValueError, binascii.Error):
+        return ""
+    for encoding in ("utf-16-le", "utf-8"):
+        try:
+            out = raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        # A wrong guess decodes to control characters, not a command.
+        printable = sum(1 for c in out if c == "\n" or c == "\t" or c >= " ")
+        if out and printable >= 0.9 * len(out):
+            return out
+    return ""
+
+
+def _contains_sensitive(text: str) -> bool:
+    """Would masking this text have masked anything? Used to decide whether an
+    encoded command is hiding something."""
+    for _category, label, pattern in _PATTERNS:
+        # A hash or a UUID on its own identifies no one; see _KEEP_PATTERNS.
+        if label in ("HASH", "UUID", "CC"):
+            continue
+        for m in pattern.finditer(text):
+            s, e = m.span(m.lastindex) if m.lastindex else m.span()
+            if _accept(label, text[s:e]):
+                return True
+    return False
+
+
+def _ps_encoded_spans(text: str):
+    """Spans for base64 -EncodedCommand blobs whose decoding holds something
+    the masker would have masked in the clear.
+
+    Masking the blob costs the reader the command, so it is only done when the
+    command would have been masked anyway had it been typed out — the same
+    answer either way, which is the property that makes this defensible. An
+    encoded blob carrying nothing but an attacker's own script is left intact,
+    because that is what the analyst is asking about."""
+    spans = []
+    for m in _PS_ENCODED.finditer(text):
+        blob = m.group(1)
+        if len(blob) > 1 << 18:            # 256 KB of base64; not a command
+            continue
+        decoded = _decode_ps_command(blob)
+        if decoded and _contains_sensitive(decoded):
+            spans.append((m.start(1), m.end(1), blob, "ENCODED"))
+    return spans
+
+
+def _ps_spans(text: str):
+    return (_ps_param_spans(text) + _ps_table_spans(text)
+            + _ps_encoded_spans(text))
+
+
+# A value the masker has already decided is sensitive must not be left
+# standing anywhere else in the same paste. A pattern can only anchor on one
+# shape of a name — "Machine: WKS-01" in a transcript header — while the same
+# name is echoed bare two lines down by `hostname`, where nothing marks it as
+# anything. This is the difference between "the patterns matched" and "the
+# value is gone", and only the second one is the promise the tool makes.
+_PROPAGATE_MIN_LEN = 3
+_PROPAGATE_MAX_MULTIWORD = 64
+# A token, with the same boundaries a hostname or DOMAIN\user has. Scanning
+# the text once and looking each token up beats matching every known value
+# against the whole text, which on a large log is the difference between one
+# pass and hundreds.
+# Two readings, because a backslash both joins a token ("CORP\svc_backup" is
+# one name) and separates one ("\\NAS-01\Finance" is a server and a share).
+# Whichever reading matches a known value wins; the qualified one goes first
+# so DOMAIN\user is not split into two placeholders.
+_TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._\-@$]*")
+_TOKEN_QUALIFIED = re.compile(
+    r"[A-Za-z0-9_][A-Za-z0-9._\-@$]*(?:\\+[A-Za-z0-9._\-@$]+)+")
+# The short form of an FQDN is the same machine: "WKS-01" is "WKS-01.corp
+# .local". Only propagated when the label looks like a machine name rather
+# than a word, so "mail" out of "mail.acme.com" is never chased through prose.
+_MACHINE_ISH = re.compile(r"^(?=.*[\d-])[A-Za-z0-9][A-Za-z0-9\-]{3,}$")
+# Words that are both a plausible NetBIOS domain and ordinary prose. The
+# qualified "STORAGE\root_backup" is still masked in full; only the bare word
+# is left alone, because masking every "storage" in a report is noise.
+_GENERIC_DOMAIN_WORDS = {
+    "storage", "finance", "security", "network", "backup", "system",
+    "service", "services", "support", "office", "cloud", "group", "home",
+    "main", "test", "users", "admin", "enterprise", "global", "internal",
+    "external", "primary", "secondary", "production", "development",
+    "marketing", "sales", "legal", "media", "data", "web", "mail",
+}
+
+
+def _propagate_spans(text: str, spans):
+    """Spans for every other occurrence of a value already being masked."""
+    known = {}
+    for _s, _e, real, label in spans:
+        if len(real) < _PROPAGATE_MIN_LEN:
+            continue
+        known.setdefault(real, label)
+        # The domain half of DOMAIN\user is the customer's AD domain, and it
+        # also stands alone in ACLs, group names and event fields where no
+        # pattern can anchor on it.
+        if label == "USER" and "\\" in real:
+            prefix = real.split("\\", 1)[0]
+            if len(prefix) >= _PROPAGATE_MIN_LEN \
+                    and prefix.lower() not in _WINDOWS_BUILTIN_VALUES \
+                    and prefix.lower() not in _GENERIC_DOMAIN_WORDS:
+                known.setdefault(prefix, "DOMAIN")
+        if label == "HOST" and "." in real:
+            short = real.split(".", 1)[0]
+            if _MACHINE_ISH.match(short):
+                known.setdefault(short, "HOST")
+    if not known:
+        return []
+    out = []
+    # Single-token values: two passes over the text, a dict lookup per token.
+    for token in (_TOKEN_QUALIFIED, _TOKEN):
+        for m in token.finditer(text):
+            tok, end = m.group(), m.end()
+            label = known.get(tok)
+            # A token class wide enough to hold "10.0.0.1" also swallows the
+            # full stop that ends "...was raised in CORP." — try the token as
+            # written first, then without its trailing punctuation.
+            while label is None and tok and tok[-1] in ".-@$":
+                tok, end = tok[:-1], end - 1
+                label = known.get(tok)
+            if label:
+                out.append((m.start(), end, tok, label))
+    # Values a token cannot hold (a distinguished name, "Anna Novak", an IPv6
+    # address) are rarer; those get a literal scan each, and are capped so a
+    # pathological log cannot turn this into a quadratic pass.
+    multi = [v for v in known
+             if not (_TOKEN.fullmatch(v) or _TOKEN_QUALIFIED.fullmatch(v))]
+    for value in sorted(multi, key=len, reverse=True)[:_PROPAGATE_MAX_MULTIWORD]:
+        for m in _exact_known_pattern(value).finditer(text):
+            out.append((m.start(), m.end(), value, known[value]))
+    return out
+
+
+# When two patterns both claim a value, the name the analyst reads should be
+# the specific one. "user=a.novak" and a bare "a.novak" in prose match the
+# user pattern and the catch-all FQDN pattern respectively; calling the result
+# [HOST_1] would tell the reader it is a machine.
+_LABEL_RANK = {
+    "CUSTOM": 0, "EMAIL": 1, "SID": 2, "DN": 3, "APIKEY": 4, "KEYID": 5,
+    "ARN": 6, "SECRET": 7, "ACCTID": 8, "UUID": 9, "MAC": 10, "IP": 11,
+    "IPV6": 12, "PHONE": 13, "ADDRESS": 14, "SERIAL": 15, "ENCODED": 16,
+    "RESOURCE": 17, "USER": 18, "DOMAIN": 19, "ASSET": 20, "ORG": 21,
+    "GROUP": 22, "SUBJECT": 23, "HOST": 24, "CC": 25, "HASH": 26,
+}
+
+
 def _accept(label: str, value: str) -> bool:
     """Reject false positives before we commit to masking a match."""
     v = value.strip()
     if not v:
+        return False
+    # A PowerShell variable, a splatted hashtable or the following parameter
+    # is never itself the value: "-Credential $cred", "-Headers @{...}",
+    # "-Identity -Server". Only these exact shapes — a real password is
+    # allowed to start with "$", so "$ecret1" must still be masked.
+    if (_PS_NOT_A_SECRET if label == "SECRET" else _PS_NOT_A_VALUE).match(v):
+        return False
+    if label == "SECRET" and "-" in v \
+            and v.lstrip("([{").split("-", 1)[0].lower() in _PS_VERBS:
         return False
     if label in ("USER", "DOMAIN", "HOST", "ASSET", "ORG", "GROUP",
                  "SUBJECT") and v.lower() in _WINDOWS_BUILTIN_VALUES:
@@ -1034,10 +1554,16 @@ def _accept(label: str, value: str) -> bool:
     # a group or topic of one or two characters names nothing.
     if label in ("ASSET", "ORG", "GROUP", "SUBJECT") and len(v) < 3:
         return False
-    # NT AUTHORITY\SYSTEM, NT SERVICE\TrustedInstaller, BUILTIN\Administrators…
-    if label == "USER" and "\\" in v \
-            and v.lower().split("\\", 1)[0] in _BUILTIN_DOMAIN_PREFIXES:
+    if label in ("USER", "DOMAIN", "HOST") and v[0] == "\\":
         return False
+    # NT AUTHORITY\SYSTEM, NT SERVICE\TrustedInstaller, BUILTIN\Administrators…
+    if label == "USER" and "\\" in v:
+        prefix, account = v.lower().split("\\", 1)
+        if prefix in _BUILTIN_DOMAIN_PREFIXES or prefix in _DOMAIN_ALLOWLIST:
+            return False
+        # "CORP\Domain Admins" names a built-in group, not a person.
+        if account.strip("\\") in _WINDOWS_BUILTIN_VALUES:
+            return False
     # Numeric values (uid=1000, domainInfo=0) identify nothing on their own.
     if label in ("USER", "DOMAIN") and v.isdigit():
         return False
@@ -1076,6 +1602,8 @@ def _accept(label: str, value: str) -> bool:
     if label == "CC":
         digits = re.sub(r"[ -]", "", v)
         if not (13 <= len(digits) <= 16):
+            return False
+        if not _luhn_ok(digits):
             return False
     return True
 
@@ -1189,6 +1717,14 @@ def mask(text: str, enabled: List[str],
             continue
         patterns.insert(0, ("known", label, _exact_known_pattern(real)))
 
+    # PowerShell parameter arguments, Format-Table columns and encoded
+    # commands — the shapes no regex can follow (see _ps_spans).
+    for s, e, real, label in _ps_spans(text):
+        if not _accept(label, real) or overlaps(s, e):
+            continue
+        take(s, e)
+        spans.append((s, e, real, label))
+
     for category, label, pattern in patterns:
         if category not in ("custom", "known") and category not in enabled_set:
             continue
@@ -1206,17 +1742,36 @@ def mask(text: str, enabled: List[str],
             take(s, e)
             spans.append((s, e, real, label))
 
+    # Second pass: the same real values, wherever else they appear.
+    for s, e, real, label in _propagate_spans(text, spans):
+        if overlaps(s, e):
+            continue
+        take(s, e)
+        spans.append((s, e, real, label))
+
+    # One label per value, by specificity rather than by whichever occurrence
+    # happens to be numbered first (see _LABEL_RANK).
+    best: Dict[str, str] = {}
+    for _s, _e, real, label in spans:
+        current = best.get(real)
+        if current is None or _LABEL_RANK.get(label, 99) \
+                < _LABEL_RANK.get(current, 99):
+            best[real] = label
+    spans = [(s, e, real, best[real]) for s, e, real, _lbl in spans]
+
     # Assign stable placeholders. Same real value -> same placeholder.
     # Seed from the conversation's existing mapping so placeholders stay
     # consistent across turns and numbering continues where it left off.
     mapping: Dict[str, str] = {}              # placeholder -> real
     reverse: Dict[Tuple[str, str], str] = {}  # (label, real) -> placeholder
+    by_value: Dict[str, str] = {}             # real -> placeholder
     counters: Dict[str, int] = {}
     for ph, real in (base_mapping or {}).items():
         mapping[ph] = real
         m = re.fullmatch(r"\[([A-Z0-9]+)_(\d+)\]", ph)
         if m:
             reverse[(m.group(1), real)] = ph
+            by_value.setdefault(real, ph)
             counters[m.group(1)] = max(counters.get(m.group(1), 0),
                                        int(m.group(2)))
     for label, n in (base_counters or {}).items():
@@ -1236,10 +1791,16 @@ def mask(text: str, enabled: List[str],
         key = (label, real)
         placeholder = reverse.get(key)
         if placeholder is None:
+            # The same real value must not end up behind two aliases because
+            # two patterns disagreed about what to call it: an address caught
+            # once as [EMAIL_1] and once as [USER_2] reads as two people.
+            placeholder = by_value.get(real)
+        if placeholder is None:
             counters[label] = counters.get(label, 0) + 1
             placeholder = f"[{label}_{counters[label]}]"
-            reverse[key] = placeholder
             mapping[placeholder] = real
+        reverse[key] = placeholder
+        by_value.setdefault(real, placeholder)
         placed.append((s, e, placeholder))
 
     # 2. Rebuilding, forwards, by joining the gaps between spans. Slicing the
