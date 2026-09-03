@@ -1654,13 +1654,13 @@ def test_host_named_in_prose():
 
 def test_azure_cli_and_key_vault():
     raw = ('az login --service-principal -u "e7c234a1-89bc-4d32-b7e1-8932479'
-           '23847" -p "qX8~7Q_sample_secret_value_89234=" --tenant '
+           '23847" -p "this-is-not-a-real-secret" --tenant '
            '"acme.onmicrosoft.com"\n'
            'Get-AzKeyVaultSecret -VaultName "kv-prod-eastus-01" -Name '
            '"DatabaseAdminConnectionString" -AsPlainText\n')
     masked, _ = masker.mask(raw, ALL)
     check("service-principal secret masked",
-          "qX8~7Q_sample_secret_value_89234=" not in masked)
+          "this-is-not-a-real-secret" not in masked)
     check("key vault name masked", "kv-prod-eastus-01" not in masked)
     check("the tenant domain masked", "acme.onmicrosoft.com" not in masked)
 

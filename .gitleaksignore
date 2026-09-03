@@ -12,3 +12,7 @@
 355ca4c5026cf9f0cf5e8a5e4b6bec0124576c53:test_masker.py:generic-api-key:16
 355ca4c5026cf9f0cf5e8a5e4b6bec0124576c53:test_masker.py:generic-api-key:26
 355ca4c5026cf9f0cf5e8a5e4b6bec0124576c53:test_masker.py:generic-api-key:38
+
+# The fake service-principal secret of the "az login -p" test, same story:
+# renamed in the following commit, but still readable in this one.
+57178f72208b619a9eff578fec559d72bcf759b1:test_masker.py:generic-api-key:1664
