@@ -149,7 +149,7 @@ _RAW_TEMPLATES: List[dict] = [
         "technique": "Command and Scripting Interpreter",
         "technique_id": "T1059",
         "prompt": (
-            "Analyse process execution for malicious tradecraft: encoded or "
+            "Analyze process execution for malicious tradecraft: encoded or "
             "obfuscated PowerShell (-enc, FromBase64String, IEX), living-off-"
             "the-land binaries (mshta, rundll32, regsvr32, certutil, wmic), "
             "suspicious parent/child chains (office→shell), and download-and-"
@@ -327,7 +327,7 @@ _RAW_TEMPLATES: List[dict] = [
         "technique": "Exploit Public-Facing Application",
         "technique_id": "T1190",
         "prompt": (
-            "Analyse web/proxy/WAF logs for exploitation of a public-facing "
+            "Analyze web/proxy/WAF logs for exploitation of a public-facing "
             "app: SQL injection, XSS, path traversal, command injection, and "
             "known-CVE probe patterns. Identify the targeted endpoints, the "
             "payloads, response codes (did anything return 200/500?), and the "

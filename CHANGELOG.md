@@ -9,9 +9,11 @@ versions follow [Semantic Versioning][semver].
 ## [Unreleased]
 
 ### Added
-- **Regex workbench** (`🔬 Regex Workbench`): paste the line a value slipped
-  through in, name the value, and get the regex change that fixes it —
-  entirely on this machine. A log too sensitive to hand an AI provider is also
+- **Regex workbench**, in the Workspace under the masked output: select a
+  value that got through and get the regex change that fixes it, entirely
+  on this machine. It sits where the problem is noticed — the value and
+  the line it came from fill themselves in, and saving a rule re-masks the
+  log immediately so you can see whether the value is actually gone. A log too sensitive to hand an AI provider is also
   too sensitive to paste into an online regex tester, so the tool that repairs
   the masking now lives behind the same wall as the data.
   - Separates the four reasons a value survives, because they have four
@@ -24,6 +26,12 @@ versions follow [Semantic Versioning][semver].
     to the generic `host=` one.
   - Every proposal is verified at the pattern's real priority before it is
     offered, and each shows what else it would newly mask in the sample.
+  - A value the masker excludes on purpose (`NT AUTHORITY\SYSTEM`,
+    `BUILTIN\Administrators`, `localhost`) cannot be rescued by a better
+    regex: the accept rule vetoes whatever is captured, so a saved pattern
+    looks right and masks nothing, every run. The workbench now proposes those
+    under the `CUSTOM` label, which the accept rules do not police, and
+    repeats why the value was excluded so the trade is explicit.
   - `mask()` takes `builtin_patches` so a candidate can be previewed at its
     true priority without saving an override or swapping global state that a
     concurrent request could see.
@@ -46,7 +54,61 @@ versions follow [Semantic Versioning][semver].
     app names (`"appName":"Box"`), and event taxonomies
     (`"action":"repo.destroy"`, `"eventType":"user.session.start"`).
 
+- **The sidebar can be hidden** with the header's ☰ button or ⌘B/Ctrl+B,
+  giving the workspace the full width. The toggle stays in the header so
+  there is a way back, and the state is restored before first paint.
+
+- The analyze button is called **Analyze by AI**. It used to say "Mask &
+  Analyse", which read as though masking waited for the click — it does not,
+  it runs as you type. The button does the one thing that actually leaves the
+  machine. The README said to press a "Preview masking" button that has not
+  existed for some time; it now describes what happens.
+- Every user-facing "analyse/analysing/analysed" is now spelled the American
+  way, matching the `analyze` already used throughout the code and the
+  `/analyze` endpoint. "Analysis" and the plural "analyses" are unchanged —
+  they are spelled the same either way.
+
+- **Never-mask terms** — the answer to "it masked something that is not
+  confidential". Click the red placeholder in *Masked data*: it shows the real
+  value, and one confirmation rules it non-sensitive for good. The value is
+  also forgotten from the entity vault, which is the part that makes the rule
+  actually work — the vault re-masks everything it has ever seen regardless of
+  the patterns, so without that the value would keep coming back and the rule
+  would look broken. The leak guard learns about it too, so a ruling does not
+  leave a blocking finding behind it. Managed under Masking Rules → Never-Mask
+  Terms. Use it when one value is wrong; use the regex workbench when a whole
+  class of value is.
+
 ### Fixed
+- **`/etc/cron.hourly` was masked as a hostname.** It is dotted like a domain
+  and `.hourly` is on no file-extension list, so every cron line came back
+  with a stock Linux path redacted out of it. Same for systemd unit names
+  (`session-42.scope`, `nginx.service`). A dotted name inside a filesystem
+  path is now read as a path component — except where the suffix really is a
+  domain suffix, so `/var/www/acme.com/htdocs` is still masked, and masked
+  whole rather than from its second label on.
+- **Hovering a masked placeholder showed nothing.** The hover card was drawn
+  above the token, which put it outside the `<pre>` that scrolls — so for
+  anything on the first line, the card was clipped away before it could be
+  seen. Moving it to `position: fixed` was not enough either: the panel has a
+  `backdrop-filter`, which makes it the containing block for fixed descendants
+  and clips them too. The card is now a single element at `<body>` level,
+  positioned on hover and flipped below the token when there is no room above.
+  A large log also stops carrying one hidden card per placeholder.
+- The hover card inherited an `all` transition, so the `left`/`top` set on it
+  animated: it slid across the screen from wherever it was last shown. It now
+  transitions opacity and transform only.
+- **A forwarded Windows event could have half its Message masked as one
+  token.** `Group Name:  Administrators  Group Domain:  Builtin  …` has no
+  comma to stop at, so the group pattern ran to the end of the line and
+  swallowed every field after it, process path included. Values now also end
+  at the two-space or tab separator these single-line Message blobs use, and
+  are hard-bounded so no log shape can turn this into a line-eater again.
+- An empty field (`User=\tDomain=`) let the capture skip the tab and mask the
+  *next key's own name* — the literal word "Domain" came out as a person.
+- `PluginVersion=WC.MSEVEN6.10.0.2.62` was masked as the IP address
+  `10.0.2.62`. Four octets starting part-way through a longer dotted string
+  are a version, not an address.
 - **JSON Lines is no longer mistaken for a CSV export.** A JSONL log — the
   wire format of most cloud connectors — has commas and quoted tokens like a
   CSV row, so the first record was read as a header: the object's *keys* were

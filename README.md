@@ -1,6 +1,6 @@
 # Log Masker — safe AI log analysis
 
-**Get an AI to analyse your logs without handing it your customers' data.**
+**Get an AI to analyze your logs without handing it your customers' data.**
 Sensitive values are replaced with placeholders on your own machine before
 anything is sent, and the real values are put back locally in the answer.
 
@@ -38,11 +38,11 @@ pip install -r requirements.lock
 python -m log_masker.cli start --open
 ```
 
-Paste [`sample_logs/ssh-brute-force.log`](sample_logs/) into the workspace and
-press **Preview masking**. No provider is contacted, no key is required, and the
-*Masked data* tab shows you exactly what would have been sent. Only when you
-press **Mask & Analyse** does anything leave the machine — and only the masked
-text.
+Paste [`sample_logs/ssh-brute-force.log`](sample_logs/) into the workspace.
+**Masking runs as you type** — no provider is contacted, no key is required,
+and the *Masked data* tab already shows exactly what would be sent. Only when
+you press **Analyze by AI** does anything leave the machine — and only the
+masked text.
 
 ## What this tool does and does not guarantee
 
@@ -337,12 +337,44 @@ log you paste from then on — no need to add them again. If the regex contains 
 capture group, only the group is masked (`key=(value)` style); otherwise the
 whole match is.
 
+### "This should not be masked" — never-mask terms
+
+The mirror of the workbench, for the opposite complaint. Masking is
+best-effort, so it will sometimes fire on something that identifies nobody: a
+product name, a scheduled task, an internal code word shaped like a hostname.
+
+**Click the red placeholder** in *Masked data*. It shows you the real value it
+is standing for, asks once, and then:
+
+* the value is **never masked again**, in any future analysis;
+* it is **forgotten from the entity vault** — which matters more than it
+  sounds. The vault re-masks every value it has ever seen, *regardless of the
+  patterns*, so a value learned before the ruling would keep coming back
+  masked and the rule would look broken;
+* the [pre-send leak guard](#pre-send-leak-guard) stops warning about it, so
+  ruling a value non-sensitive does not leave a blocking finding behind it.
+
+The list lives under **Masking Rules → Never-Mask Terms**, where you can
+remove an entry and have it masked again. Matching is case-insensitive, and a
+value cannot be on both lists — always-mask wins and says so.
+
+Use this when *one particular value* is wrong. When a whole **class** of value
+is wrong — every `Security ID:` field, every `assetLabel=` — the workbench
+below is the better tool, because one rule then covers all of them.
+
 ### Regex workbench — "why was this not masked?"
 
-**🔬 Regex Workbench** in the sidebar. Paste the line a value slipped through
-in, name the value, and press **Diagnose**. Everything runs on this machine:
-the whole reason it exists is that a log too sensitive to hand an AI provider
-is also too sensitive to paste into an online regex tester.
+Under the masked output in the Workspace, collapsed until you need it:
+**🔬 Something not masked? — fix the rule here**. It lives where the problem is
+noticed, so nothing has to be re-pasted and no tab has to be switched.
+
+**Select the value in the masked pane** and the panel opens with the value and
+the line it came from already filled in — from the *raw* log, since that is
+what a pattern has to match. Press **Diagnose**. Everything runs on this
+machine: the whole reason it exists is that a log too sensitive to hand an AI
+provider is also too sensitive to paste into an online regex tester. Saving a
+rule immediately re-masks the log above and tells you whether the value is
+actually gone.
 
 It answers the question in two halves. First, **why** the value survived —
 there are four different reasons and they have four different fixes:
@@ -350,7 +382,7 @@ there are four different reasons and they have four different fixes:
 | Verdict | What it means | Where the fix is |
 |---|---|---|
 | No pattern matches this | nothing in the library sees these characters | a regex change |
-| Matched, then dropped | a pattern found it and an accept rule threw it out — it names the rule, e.g. *"`.pdf` is on the not-a-TLD list"* | usually an allow-list, not a regex |
+| Matched, then dropped | a pattern found it and an accept rule threw it out — it names the rule, e.g. *"`.pdf` is on the not-a-TLD list"* | no regex under that label can help; see **masking it anyway** below |
 | Deliberately kept | a protected span claimed it (a file hash, a vendor id) | nothing — see [what is deliberately not masked](#what-is-deliberately-not-masked) |
 | Claimed by a higher-priority pattern | something else masked those characters first | the competing pattern |
 | Already masked | the current patterns handle it | nothing |
@@ -361,6 +393,16 @@ because one more field name in an existing list is a change a reviewer can
 read. An indented `Requesting Workstation:` line is offered as an addition to
 the Windows Event Log pattern, not to the generic `host=` one, and a
 `-TargetBox` argument goes to the PowerShell parameter pattern.
+
+**Masking something that is excluded on purpose.** Some values are left alone
+by design — `NT AUTHORITY\SYSTEM`, `BUILTIN\Administrators`, `localhost`,
+loopback addresses. They identify nobody, so an accept rule vetoes them
+*whatever* regex captures them: writing a pattern for `Security ID:` and
+saving it looks like it worked and then masks nothing, every run. If you want
+them masked anyway — plenty of shops do — the workbench proposes the rule
+under the **`CUSTOM`** label, which those rules do not police, and repeats the
+reason the value was excluded so the trade is explicit. It is your call; the
+tool just refuses to let you make it by accident.
 
 Every proposal is **verified before it is offered**: applied at that pattern's
 real priority, the value is gone from the sample. Proposals that only work
@@ -383,7 +425,7 @@ future paste and survives restarts (stored locally in
 **↺ default**. A regex that doesn't compile is rejected on save; if an
 override ever becomes invalid on disk, the default is used instead.
 
-> Masking is regex-based and best-effort. Use the **Preview masking** button to
+> Masking is regex-based and best-effort. Read the *Masked data* tab to
 > review exactly what will be sent before you send it.
 
 ## Setup
@@ -441,7 +483,7 @@ Open **⚙ Setup**, pick a provider, enter its API key, choose a model, and clic
 2. Environment variable: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
    or `AZURE_OPENAI_API_KEY`.
 
-Use **Test connection** to verify before analysing. Setup also lets you delete a
+Use **Test connection** to verify before analyzing. Setup also lets you delete a
 saved key per provider.
 
 ## Run
@@ -540,7 +582,11 @@ the AI's answer useless — so these survive into the text that is sent:
 * **API and schema namespaces** — `@odata.type`,
   `#microsoft.graph.security.deviceEvidence`, `event.kind`. A camelCase final
   label is not a TLD.
-* **System paths and binaries** — `C:\Windows\System32\...`, `powershell.exe`.
+* **System paths and binaries** — `C:\Windows\System32\...`, `powershell.exe`,
+  and dotted path components that look like domains: `/etc/cron.hourly`,
+  `/etc/postfix/main.cf`, `session-42.scope`, `nginx.service`. A domain that
+  really is one is still masked inside a path (`/var/www/acme.com/htdocs`) —
+  the suffix is what tells them apart.
 * **Phishing evidence** — the `"subject"` line and the attachment `"filename"`
   of an email security alert (Proofpoint TAP). In a phishing case the lure *is*
   the question, exactly like a file hash. The recipient address is still masked.
@@ -568,6 +614,15 @@ the AI's answer useless — so these survive into the text that is sent:
 Tenant ids, Entra device ids, EDR device ids, cloud account numbers, and
 link-local addresses *are* masked: they identify the organisation or the
 machine.
+
+### Hiding the sidebar
+
+The ☰ button in the header (or **⌘B** / **Ctrl+B**) slides the navigation out
+of the way and gives the two workspace columns the full width — useful when
+you are reading a wide log. The button stays in the header when the menu is
+gone, so there is always a way back, and the choice is remembered between
+sessions and applied before first paint rather than flashing in and snapping
+shut.
 
 ## Log file encodings
 
@@ -612,14 +667,15 @@ and phishing. Each is mapped to its **MITRE ATT&CK tactic + technique ID**
    The masked version appears immediately in **Sent to AI**, where
    **⬇ Download masked** saves it as `<name>.masked.txt` for offline review
    before you submit anything.
-2. Click **Preview masking** to see the exact masked text + the local mapping.
-3. Click **Mask & Analyse** to send the masked logs to the AI. This starts a
+2. The *Masked data* tab updates as you type — the exact masked text plus the
+   local mapping, before anything is sent.
+3. Click **Analyze by AI** to send the masked logs to the AI. This starts a
    **conversation**: the result pane becomes a chat where you can ask
    follow-up questions and the AI keeps the context of all previous turns.
 4. Restored values are highlighted in the chat. The **Sent to AI** tab shows
    the full masked transcript — precisely what left your machine.
 5. Click **⏹ End conversation** to discard the AI-side history and the local
-   mapping, then analyse the next raw log in a fresh conversation.
+   mapping, then analyze the next raw log in a fresh conversation.
 
 ### Requests tab (audit log)
 
@@ -680,7 +736,7 @@ tokens are inferred from character counts (~4 chars/token).
 **Cost per conversation.** The Result pane shows a running total for the open
 conversation next to the masking badge — `$0.59 · 3 call(s)`, hover for tokens
 and model. It covers everything billed under that conversation id: the opening
-**Mask & Analyse** plus every follow-up. Ending the conversation closes it out
+**Analyze by AI** plus every follow-up. Ending the conversation closes it out
 with a final figure in the closing message:
 
 > 💵 This conversation cost **$0.0057** — 3 call(s), 6.2K tokens on
@@ -705,7 +761,7 @@ catches exactly the failures the masker can't see:
   patterns didn't know about — **advisory**
 
 Advisory findings appear as a strip in the **Sent to AI** tab (live, during
-preview). Blocking findings stop **Mask & Analyse** and follow-up questions
+preview). Blocking findings stop **Analyze by AI** and follow-up questions
 cold — nothing leaves the machine — and open a dialog where the analyst can
 **➕ mask** the value (adds it to custom terms and re-masks) or explicitly
 **send anyway**. Acknowledgements are recorded in the request audit log

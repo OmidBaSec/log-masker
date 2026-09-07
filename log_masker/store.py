@@ -55,6 +55,7 @@ def _load() -> dict:
         if isinstance(data, dict):
             data.setdefault("custom_terms", [])
             data.setdefault("custom_patterns", [])
+            data.setdefault("keep_terms", [])
             return data
     except (OSError, json.JSONDecodeError):
         pass
@@ -85,6 +86,50 @@ def set_terms(terms: List[str]) -> None:
         out.append(t)
     data["custom_terms"] = out
     _save(data)
+
+
+# --- never-mask terms -------------------------------------------------------
+# The mirror of custom terms. Masking is best-effort by nature, and when it
+# fires on something that identifies nobody -- a product name, a scheduled
+# task, an internal code word that happens to look like a hostname -- the
+# answer is rarely "edit a regex": it is "this particular value is fine".
+def get_keep_terms() -> List[str]:
+    return list(_load().get("keep_terms", []))
+
+
+def set_keep_terms(terms: List[str]) -> None:
+    data = _load()
+    seen, out = set(), []
+    for t in terms:
+        t = t.strip()
+        if not t or t.lower() in seen:
+            continue
+        seen.add(t.lower())
+        out.append(t)
+    data["keep_terms"] = out
+    _save(data)
+
+
+def add_keep_term(term: str) -> None:
+    term = (term or "").strip()
+    if not term:
+        raise ValueError("Give the value that should not be masked.")
+    if len(term) < 2:
+        raise ValueError("Too short to be a rule of its own.")
+    current = get_keep_terms()
+    if any(t.lower() == term.lower() for t in current):
+        raise ValueError("That value is already on the never-mask list.")
+    # A term that is also on the always-mask list would be a contradiction;
+    # the explicit "always" wins and the caller is told.
+    if any(t.lower() == term.lower() for t in get_terms()):
+        raise ValueError("That value is on the always-mask list — remove it "
+                         "there first.")
+    set_keep_terms(current + [term])
+
+
+def delete_keep_term(term: str) -> None:
+    set_keep_terms([t for t in get_keep_terms()
+                    if t.lower() != (term or "").strip().lower()])
 
 
 # --- saved regex patterns ---------------------------------------------------

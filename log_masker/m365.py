@@ -194,7 +194,7 @@ def chat(tenant_id: str, client_id: str, system: str, user_text: str,
         raise M365Error("No conversation id returned.")
 
     # 2. Send the prompt. Copilot has no system role, so prepend instructions.
-    prompt = f"{system}\n\n--- LOGS TO ANALYSE ---\n{user_text}"
+    prompt = f"{system}\n\n--- LOGS TO ANALYZE ---\n{user_text}"
     body = {
         "message": {"text": prompt},
         "locationHint": {"timeZone": timezone},

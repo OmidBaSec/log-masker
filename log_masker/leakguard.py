@@ -74,7 +74,8 @@ def _boundary(value: str) -> "re.Pattern":
 def scan(masked: str,
          mapping: Optional[Dict[str, str]] = None,
          custom_terms: Optional[List[str]] = None,
-         enabled: Optional[List[str]] = None) -> List[dict]:
+         enabled: Optional[List[str]] = None,
+         keep_terms: Optional[List[str]] = None) -> List[dict]:
     """Scan MASKED text for residue that may still identify the customer.
 
     `enabled` is the list of active masking categories; checks belonging to a
@@ -84,6 +85,11 @@ def scan(masked: str,
     text = masked or ""
     if not text.strip():
         return []
+    # Values the analyst has ruled non-sensitive. Without this the guard would
+    # block the send over the very thing they just told it to leave alone --
+    # loudest for a value the vault learned before the ruling, which is still
+    # in the conversation mapping.
+    kept = {t.strip().lower() for t in (keep_terms or []) if t.strip()}
     cats = set(enabled) if enabled is not None else {
         "identities", "network", "secrets"}
     findings: List[dict] = []
@@ -100,7 +106,7 @@ def scan(masked: str,
     # 1. Values that WERE masked somewhere but still appear verbatim — the
     #    partial-masking bug class. Strongest possible signal.
     for ph, real in (mapping or {}).items():
-        if len(real) < 4 or real.isdigit():
+        if len(real) < 4 or real.isdigit() or real.lower() in kept:
             continue
         hits = _boundary(real).findall(text)
         if hits:
@@ -161,7 +167,8 @@ def scan(masked: str,
         for m in _HOSTISH.finditer(text):
             tok = m.group(0)
             low = tok.lower()
-            if low in _SAFE_TOKENS or low.startswith(_SAFE_PREFIXES):
+            if low in _SAFE_TOKENS or low.startswith(_SAFE_PREFIXES) \
+                    or low in kept:
                 continue
             if not any(c.isdigit() for c in tok):
                 continue

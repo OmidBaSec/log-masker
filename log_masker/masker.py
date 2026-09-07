@@ -61,6 +61,11 @@ _NOT_TLDS = {
     # excludes .id and .name, which are real TLDs — over-masking is noise,
     # under-masking is a leak.
     "type", "kind", "value", "count", "severity", "timestamp", "verdict",
+    # systemd unit suffixes and cron periods -- "session-42.scope",
+    # "cron.hourly", "nginx.service". Dotted like a host, named like a unit.
+    "scope", "service", "socket", "target", "timer", "mount", "slice",
+    "swap", "automount", "hourly", "daily", "weekly", "monthly", "rules",
+    "list", "repo", "spec", "lock", "pid", "sock", "old", "orig", "rpmnew",
 }
 
 # Tokens that sit where a syslog hostname would but are really log levels,
@@ -108,6 +113,20 @@ _SAAS_APP_ALLOWLIST = {
 # DOMAIN\user matches whose "domain" part is really a built-in prefix
 # (NT AUTHORITY\SYSTEM, NT SERVICE\TrustedInstaller, BUILTIN\Administrators).
 _BUILTIN_DOMAIN_PREFIXES = {"authority", "service", "builtin"}
+
+
+# Suffixes that make a dotted name inside a filesystem path a real host rather
+# than a file or a directory. Deliberately short: the cost of missing one is a
+# domain that is still masked everywhere else it appears in the paste and
+# propagated back into the path from there, while the cost of being generous
+# is "/etc/cron.hourly" coming out redacted.
+_PATH_DOMAIN_SUFFIXES = (
+    "com", "net", "org", "io", "co", "uk", "de", "fr", "nl", "eu", "us",
+    "ca", "au", "jp", "cn", "ru", "ch", "se", "no", "dk", "fi", "it", "es",
+    "pl", "be", "at", "ie", "nz", "za", "br", "in", "info", "biz", "gov",
+    "edu", "mil", "int", "local", "lan", "loc", "internal", "corp", "intra",
+    "intranet", "ad", "home", "priv", "private", "localdomain",
+)
 
 
 def _compile_patterns():
@@ -251,7 +270,8 @@ def _compile_patterns():
     # value so "Domain Admins" stays one token.
     p.append(("identities", "GROUP", re.compile(
         r"(?i)\b(?:[a-z_]*group|zone|policy|role)[ _-]?names?[\"']?\s*[=:]"
-        r"\s*[(\"']?([^,;()\"'\r\n]+?)(?=\s*[,;)\"'\r\n]|$)")))
+        r"[ \t]*[(\"']?([^,;()\"'\r\n\t]{1,120}?)"
+        r"(?=[ ]{2,}|\t|\s*[,;)\"'\r\n]|$)")))
     p.append(("identities", "GROUP", re.compile(
         r"(?i)\"(?:department|division|team|business[_-]?unit"
         r"|target[_-]?user[_-]?or[_-]?group[_-]?name)\"\s*:\s*\"([^\"]+)\"")))
@@ -276,7 +296,7 @@ def _compile_patterns():
     # Zoom meeting topics and the "operation detail" strings of SaaS admin
     # logs are pure customer business content. Email subjects are
     # deliberately NOT masked: in a phishing case the subject line is the
-    # evidence being analysed, exactly like a file hash.
+    # evidence being analyzed, exactly like a file hash.
     p.append(("identities", "SUBJECT", re.compile(
         r"(?i)\"(?:topic|meeting[_-]?topic|operation[_-]?detail"
         r"|session[_-]?name)\"\s*:\s*\"([^\"]+)\"")))
@@ -325,7 +345,7 @@ def _compile_patterns():
     p.append(("identities", "USER", re.compile(
         r"(?i)(?:user(?:[ _-]?name|[ _-]?id)?|usr[_-]?name|usr|login"
         r"|account(?:[ _-]?name)?|uid|identity|target|sAMAccountName)"
-        r"[\"']?\s*[=:]\s*[\"']?([A-Za-z0-9._\\@\-]{2,})")))
+        r"[\"']?\s*[=:]\s*[\"']?([A-Za-z0-9._\\@\-]{2,})\b(?!\s*=)")))
     # Domain key=value pairs (M365 Defender "AccountDomain":"acme",
     # Symantec EP "Domain name: ACME", etc.).
     p.append(("identities", "DOMAIN", re.compile(
@@ -424,7 +444,7 @@ def _compile_patterns():
         r")(?![:.\w])")))
     # IPv4.
     p.append(("network", "IP", re.compile(
-        r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}"
+        r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}"
         r"(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")))
     # Windows Event Log workstation / computer fields, e.g.
     #   "  Workstation Name:  WS-FINANCE-07" / "Caller Computer Name: PC-042"
@@ -558,7 +578,23 @@ def _compile_patterns():
     p.append(("network", "HOST", re.compile(
         r"(?m)^\d{10}(?:\.\d+)?[ \t]+([A-Za-z][\w.\-]+)\b")))
     # FQDN / hostnames with a real TLD (filtered against _NOT_TLDS below).
+    # Not when it sits inside a filesystem path: "/etc/cron.hourly" is a
+    # directory and "/var/log/syslog.1" a file, neither of them a host. The
+    # "//" branch keeps a URL's host, which is also preceded by a slash. A
+    # domain that really does appear in a path is still caught wherever else
+    # it appears in the paste, and propagated back into the path from there.
+    # A real domain inside a path is still a domain -- "/var/www/acme.com" --
+    # but only where the suffix is one, which is what tells it apart from
+    # "/etc/cron.hourly". Anchored to the slash so it cannot start half way
+    # through and mask "corp.com" out of "acme-corp.com".
     p.append(("network", "HOST", re.compile(
+        r"(?<=/)(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+"
+        r"(?:" + "|".join(_PATH_DOMAIN_SUFFIXES) + r")\b")))
+    p.append(("network", "HOST", re.compile(
+        # Not mid-token either: a lookbehind that only rejects the first
+        # position is dodged by starting at the next label, which is how
+        # "/var/www/acme-corp.com" came out as "acme-[HOST_2]".
+        r"(?:(?<=//)|(?<![/\\.\-]))"
         r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+"
         r"[A-Za-z]{2,}\b")))
 
@@ -782,6 +818,8 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
     ("syslog-iso-host", "Syslog header (ISO) & VMware",
      "Hostname after ISO/RFC5424 timestamps (ESXi, vCenter)"),
     ("meraki-host", "Cisco Meraki", "Device name after the epoch timestamp"),
+    ("path-domain", "File paths",
+     "Domains inside a path (/var/www/acme.com), by suffix"),
     ("fqdn", "Generic network", "Fully-qualified domain names / hostnames"),
 ]
 
@@ -1625,7 +1663,8 @@ def mask(text: str, enabled: List[str],
          custom_patterns: List[Dict[str, str]] = None,
          base_mapping: Dict[str, str] = None,
          base_counters: Dict[str, int] = None,
-         builtin_patches: Dict[str, str] = None) -> Tuple[str, Dict[str, str]]:
+         builtin_patches: Dict[str, str] = None,
+         keep_terms: List[str] = None) -> Tuple[str, Dict[str, str]]:
     """
     Return (masked_text, mapping) where mapping maps placeholder -> real value.
 
@@ -1644,6 +1683,10 @@ def mask(text: str, enabled: List[str],
     `base_counters` sets per-label numbering floors on top of what
     `base_mapping` implies. The entity vault uses this so that a forgotten
     entity's number is retired: a new value can never inherit an old alias.
+    `keep_terms` are exact strings that must never be masked, whatever any
+    pattern says. They claim their span before anything else runs -- including
+    before the conversation's own known values, so a value wrongly learned
+    earlier stops being re-masked the moment it is added here.
     `builtin_patches` maps a built-in pattern id to a replacement regex for
     this call only. The regex workbench uses it to answer "would this edit
     have caught the value?" at the pattern's real priority, without saving an
@@ -1701,6 +1744,16 @@ def mask(text: str, enabled: List[str],
 
     def take(s: int, e: int) -> None:
         claimed[s:e] = b"\x01" * (e - s)
+
+    # The analyst's own never-mask list, ahead of everything: this is the
+    # override for "you masked something that identifies nobody", and it has
+    # to beat the conversation mapping as well as the patterns.
+    for term in sorted({t.strip() for t in (keep_terms or []) if t.strip()},
+                       key=len, reverse=True):
+        for m in re.finditer(_exact_known_pattern(term).pattern, text,
+                             re.IGNORECASE):
+            if not overlaps(m.start(), m.end()):
+                take(m.start(), m.end())
 
     # Protected spans first: file hashes, vendor reference ids and ATT&CK ids
     # claim their span and are never masked, so no later pattern can take them

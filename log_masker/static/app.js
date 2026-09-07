@@ -40,11 +40,12 @@ function renderMasked(text, mapping = {}) {
   return escapeHtml(text).replace(/\[([A-Z0-9]+_\d+)\]/g, (_m, p1) => {
     const alias = `[${p1}]`;
     const real = mapping[alias];
-    const tip = real
-      ? `Original: <code>${escapeHtml(real)}</code>`
-      : `Local masked value`;
-    return `<span class="masked-placeholder" data-alias="${escapeHtml(alias)}">` +
-           `${escapeHtml(alias)}<span class="tooltip-card">${tip}</span></span>`;
+    const tip = real ? `Original: ${real}` : "Local masked value";
+    const keep = real ? ` data-keep="${escapeHtml(real)}"` : "";
+    return `<span class="masked-placeholder" data-alias="${escapeHtml(alias)}"` +
+           `${keep} data-tip="${escapeHtml(tip)}"` +
+           `${real ? ' title="Click if this should not be masked"' : ""}>` +
+           `${escapeHtml(alias)}</span>`;
   });
 }
 
@@ -66,9 +67,9 @@ function highlightRestored(text, mapping = {}) {
   });
   // Pass 2: swap tokens for restored badges (no real text present in pass 1).
   reals.forEach((real, i) => {
-    const badge = `<span class="restored-badge" data-real="${escapeHtml(real)}">` +
-      `${escapeHtml(real)}<span class="tooltip-card">Redacted alias: ` +
-      `<code>${escapeHtml(aliasFor[real])}</code></span></span>`;
+    const badge = `<span class="restored-badge" data-real="${escapeHtml(real)}"` +
+      ` data-tip="${escapeHtml(`Redacted alias: ${aliasFor[real]}`)}">` +
+      `${escapeHtml(real)}</span>`;
     html = html.split(`\uE000R${i}\uE000`).join(badge);
   });
   return html;
@@ -206,7 +207,6 @@ function showTab(name) {
 // --- Sidebar viewport navigation -----------------------------------------
 const VIEW_TITLES = {
   workspace: "Workspace", rules: "Masking Rules",
-  workbench: "Regex Workbench",
   templates: "Prompt Templates", vault: "Entity Vault", audit: "Audit Trail",
 };
 let loadedViews = {};   // lazy-load each secondary dashboard once
@@ -225,6 +225,7 @@ function switchView(viewName) {
     loadedViews.rules = true;
     loadBuiltinPatterns();
     renderCustomTermsChips();
+    loadKeepTerms();
   }
   if (viewName === "templates" && !loadedViews.templates) {
     loadedViews.templates = true;
@@ -256,7 +257,7 @@ async function runPreview() {
     return;
   }
   if (CONV.id) {
-    setStatus("Conversation active — end it to analyse a new log. (Preview paused.)");
+    setStatus("Conversation active — end it to analyze a new log. (Preview paused.)");
     return;
   }
   setStatus("Masking locally…");
@@ -324,7 +325,7 @@ function schedulePromptPreview() {
 }
 
 // Ask the server to assemble the EXACT prompt (system + masked user message)
-// so the analyst sees what will be sent before clicking analyse.
+// so the analyst sees what will be sent before clicking analyze.
 async function refreshPromptPreview() {
   const pre = $("promptPreview");
   if (!pre) return;
@@ -646,7 +647,7 @@ function leakFindingRow(f, allowQuickMask) {
       ta.value = ta.value.trim() ? ta.value.trim() + "\n" + f.value : f.value;
       hideLeakModal();
       scheduleAutoPreview();
-      setStatus(`"${f.value}" added to custom terms — re-masked. Analyse again when ready.`, "ok");
+      setStatus(`"${f.value}" added to custom terms — re-masked. Analyze again when ready.`, "ok");
     });
     row.appendChild(b);
   }
@@ -877,7 +878,7 @@ $("systemPrompt").addEventListener("input", () => sysPromptMsg(""));
 loadSystemPrompt();
 
 // --- Saved regex patterns (persistent on the server) ---------------------
-// Added once, applied automatically to every future mask/preview/analyse.
+// Added once, applied automatically to every future mask/preview/analyze.
 function patMsg(msg, kind = "") {
   const el = $("patMsg");
   el.textContent = msg;
@@ -1447,7 +1448,7 @@ function setConvActive(active) {
   const btn = $("analyzeBtn");
   btn.disabled = active;
   btn.title = active
-    ? "A conversation is active — End conversation to analyse a new log"
+    ? "A conversation is active — End conversation to analyze a new log"
     : "";
 }
 
@@ -1460,13 +1461,13 @@ function renderTranscript(transcript) {
     .join("\n\n");
 }
 
-// Toggle the analyse button's loading state + the indeterminate progress bar.
+// Toggle the analyze button's loading state + the indeterminate progress bar.
 function setAnalyzing(on) {
   const btn = $("analyzeBtn");
   $("analyzeProgress").classList.toggle("hidden", !on);
   if (on) {
     if (!btn.dataset.label) btn.dataset.label = btn.innerHTML;
-    btn.innerHTML = "⏳ Analysing…";
+    btn.innerHTML = "⏳ Analyzing…";
     btn.disabled = true;
   } else if (btn.dataset.label) {
     btn.innerHTML = btn.dataset.label;
@@ -1530,7 +1531,7 @@ async function doAnalyze(acknowledgeLeaks = false) {
       `Follow-up questions keep the AI's context; placeholders stay consistent.`;
     $("redBadge").className = "redaction-badge active";
     showTab("restored");
-    setStatus(`Done — analysed with ${d.model}. Ask follow-ups below.`, "ok");
+    setStatus(`Done — analyzed with ${d.model}. Ask follow-ups below.`, "ok");
     $("followUp").focus();
   } catch (e) {
     setStatus(e.message, "err");
@@ -1669,7 +1670,7 @@ $("endConvBtn").addEventListener("click", async () => {
   }
   addBubble("sys",
     "Conversation ended — the AI-side history and the local mapping were discarded. " +
-    "Paste a new raw log and Mask &amp; Analyse to start a new one." + total);
+    "Paste a new raw log and Analyze by AI to start a new one." + total);
   setConvActive(false);
   renderConvCost(null);
   $("redBadge").textContent = "Conversation ended. Ready for a new log.";
@@ -2641,8 +2642,11 @@ const WB_VERDICTS = {
   no_match: { css: "fixable", title: "No pattern matches this",
     fix: "This is the case a regex change fixes." },
   rejected: { css: "elsewhere", title: "Matched, then deliberately dropped",
-    fix: "A pattern found it and an accept rule threw it out. Usually the "
-       + "allow-list is the thing to change, not the regex." },
+    fix: "A pattern found it and an accept rule threw it out -- so no regex "
+       + "under that label can rescue it; the rule vetoes whatever is "
+       + "captured. Masking it anyway is still your call: the proposals on "
+       + "the right are labelled CUSTOM, which the accept rules do not "
+       + "police." },
   protected: { css: "elsewhere", title: "Deliberately kept",
     fix: "A protected span claimed it. These are values that identify nobody "
        + "-- file hashes, vendor ids -- and keeping them is on purpose." },
@@ -2734,10 +2738,14 @@ function wbRenderSuggestions(report) {
 }
 
 async function wbDiagnose() {
-  const sample = $("wbSample").value;
   const value = $("wbValue").value.trim();
-  if (!sample.trim() || !value) {
-    wbMsg("Give both the sample line and the value that got through.", true);
+  if (!value) { wbMsg("Name the value that got through.", true); return; }
+  if (!$("wbSample").value.trim()) wbFillSample(value);
+  const sample = $("wbSample").value;
+  if (!sample.trim()) {
+    wbMsg("That value is not in the log above — paste the line it came from.",
+          true);
+    $("wbSampleWrap").open = true;
     return;
   }
   wbMsg("Working locally…");
@@ -2808,12 +2816,52 @@ async function wbSave(card, suggestion) {
       msg.textContent = d.error || d.detail || "Rejected.";
       return;
     }
-    msg.textContent = "Saved — active on the next mask.";
+    msg.textContent = "Saved — re-masking this log…";
     loadedViews.rules = false;      // the rules view must re-read the library
+    // Close the loop: the value should now be gone from the pane above.
+    if (typeof runPreview === "function") {
+      await runPreview();
+      const stillThere = ($("sent").textContent || "")
+        .includes($("wbValue").value.trim());
+      msg.className = "status" + (stillThere ? " err" : "");
+      msg.textContent = stillThere
+        ? "Saved, but the value is still visible — open Diagnose again."
+        : "Saved — the value is masked above now.";
+    }
   } catch (e) {
     msg.className = "status err";
     msg.textContent = "Could not reach the local server.";
   }
+}
+
+// The sample is the line the value sits on, taken from the raw log rather
+// than the masked view -- a pattern has to be written against what the masker
+// actually reads. Falls back to the whole log when the value spans lines.
+function wbFillSample(value) {
+  const raw = $("logs") ? $("logs").value : "";
+  if (!raw || !value) return;
+  const line = raw.split(/\r?\n/).find((l) => l.includes(value));
+  const sample = line || (raw.includes(value) ? raw : "");
+  $("wbSample").value = sample;
+  const hint = $("wbSampleHint");
+  if (!hint) return;
+  hint.textContent = sample
+    ? (line ? "— the line it appears on, from your log" : "— your whole log")
+    : "— not found in the log above; paste the line yourself";
+  if (!sample) $("wbSampleWrap").open = true;
+}
+
+// Selecting the value in the masked pane is the natural gesture: you are
+// looking straight at the thing that got through.
+function wbCaptureSelection() {
+  const sel = String(window.getSelection()).trim();
+  if (!sel || sel.length > 200) return;
+  const pane = $("sent");
+  if (!pane || !window.getSelection().anchorNode
+      || !pane.contains(window.getSelection().anchorNode)) return;
+  $("wbValue").value = sel;
+  wbFillSample(sel);
+  $("wbPanel").open = true;
 }
 
 (function wireWorkbench() {
@@ -2823,4 +2871,182 @@ async function wbSave(card, suggestion) {
   $("wbValue").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); wbDiagnose(); }
   });
+  $("wbValue").addEventListener("change", () => wbFillSample($("wbValue").value.trim()));
+  const sent = $("sent");
+  if (sent) sent.addEventListener("mouseup", wbCaptureSelection);
 })();
+
+
+// --- Collapsible sidebar --------------------------------------------------
+// Screen space is the scarce thing in this app: the workspace is two dense
+// columns and the masked output is what you actually read. The state is
+// remembered, and restored before first paint by the script in <head> so the
+// menu does not flash in and snap shut on every load.
+const SIDEBAR_KEY = "logmasker.sidebar";
+
+function setSidebarHidden(hidden, remember) {
+  document.documentElement.classList.toggle("sidebar-hidden", hidden);
+  const btn = $("sidebarToggle");
+  if (btn) {
+    btn.setAttribute("aria-expanded", String(!hidden));
+    const label = hidden ? "Show the menu (⌘B)" : "Hide the menu (⌘B)";
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  }
+  if (!remember) return;
+  try {
+    localStorage.setItem(SIDEBAR_KEY, hidden ? "hidden" : "shown");
+  } catch (e) { /* storage blocked — it just will not persist */ }
+}
+
+(function wireSidebarToggle() {
+  const btn = $("sidebarToggle");
+  if (!btn) return;
+  // The class is already on <html> from the pre-paint script; this only syncs
+  // the button's label and state to it.
+  setSidebarHidden(
+    document.documentElement.classList.contains("sidebar-hidden"), false);
+  btn.addEventListener("click", () => setSidebarHidden(
+    !document.documentElement.classList.contains("sidebar-hidden"), true));
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey
+        && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      setSidebarHidden(
+        !document.documentElement.classList.contains("sidebar-hidden"), true);
+    }
+  });
+})();
+
+
+// --- Hover cards ----------------------------------------------------------
+// The masked text and the restored chat both hang a tooltip off a token. Those
+// tokens live inside scrolling containers, so the card has to be positioned in
+// viewport coordinates or it gets clipped -- above the fold for a first line,
+// below it for a last line. Placed on hover, flipping under the token when
+// there is no room over it.
+const TOOLTIP_GAP = 8;
+let hoverCard = null;
+
+function tooltipEl() {
+  if (!hoverCard) {
+    hoverCard = document.createElement("div");
+    hoverCard.className = "tooltip-card";
+    hoverCard.setAttribute("role", "tooltip");
+    document.body.appendChild(hoverCard);
+  }
+  return hoverCard;
+}
+
+function showTooltip(host) {
+  const text = host.dataset.tip;
+  if (!text) return;
+  const tip = tooltipEl();
+  // The label is ours, the value is the user's log: keep them apart.
+  const split = text.indexOf(": ");
+  tip.innerHTML = split > 0
+    ? `${escapeHtml(text.slice(0, split + 2))}<code>` +
+      `${escapeHtml(text.slice(split + 2))}</code>`
+    : escapeHtml(text);
+  tip.classList.add("visible");
+
+  const r = host.getBoundingClientRect();
+  const t = tip.getBoundingClientRect();
+  const half = t.width / 2;
+  // translateX(-50%) centres the card on this point, so clamp the centre.
+  const centre = Math.min(
+    Math.max(r.left + r.width / 2, TOOLTIP_GAP + half),
+    window.innerWidth - TOOLTIP_GAP - half);
+  const above = r.top - t.height - TOOLTIP_GAP;
+  tip.style.left = `${centre}px`;
+  tip.style.top = `${above >= TOOLTIP_GAP ? above : r.bottom + TOOLTIP_GAP}px`;
+}
+
+function hideTooltip() {
+  if (hoverCard) hoverCard.classList.remove("visible");
+}
+
+document.addEventListener("mouseover", (e) => {
+  const host = e.target.closest && e.target.closest("[data-tip]");
+  if (host) showTooltip(host); else hideTooltip();
+});
+// A scroll moves the token out from under a card that is anchored to the
+// viewport, so the card has to go with it.
+document.addEventListener("scroll", hideTooltip, true);
+
+
+// --- "This should not be masked" -----------------------------------------
+// The other half of the workbench. A regex change is right when a whole class
+// of value is wrong; when one particular value is wrong -- a product name, a
+// scheduled task, an internal word shaped like a hostname -- the honest fix is
+// to rule that value non-sensitive and move on.
+async function keepValue(real, host) {
+  if (!real) return;
+  const ok = window.confirm(
+    `Never mask "${real}"?\n\n` +
+    "It will be left in the text of every future analysis, and forgotten " +
+    "from the entity vault so it stops coming back masked.\n\n" +
+    "Manage the list under Masking Rules \u2192 Never-Mask Terms.");
+  if (!ok) return;
+  try {
+    const r = await fetch("/keep_terms", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ term: real }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      setStatus(d.detail || d.error || "Could not add that.", "err");
+      return;
+    }
+    hideTooltip();
+    await runPreview();
+    const gone = !($("sent").textContent || "")
+      .includes(host ? host.dataset.alias : "");
+    setStatus(
+      `"${real}" will never be masked` +
+      (d.forgotten && d.forgotten.length
+        ? ` — and was forgotten from the vault (${d.forgotten.join(", ")}).`
+        : ".") + (gone ? "" : " It is still masked — check Never-Mask Terms."),
+      "ok");
+    if (typeof loadKeepTerms === "function") loadKeepTerms();
+  } catch (e) {
+    setStatus("Could not reach the local server.", "err");
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const host = e.target.closest && e.target.closest("[data-keep]");
+  if (host) keepValue(host.dataset.keep, host);
+});
+
+// --- Never-mask term list (Masking Rules) --------------------------------
+async function loadKeepTerms() {
+  const box = $("keepTermsList");
+  if (!box) return;
+  try {
+    const d = await (await fetch("/keep_terms")).json();
+    if (!d.terms.length) {
+      box.innerHTML = `<p class="hint">Nothing here yet. Click any red ` +
+        `placeholder in <em>Masked data</em> that should not have been ` +
+        `masked.</p>`;
+      return;
+    }
+    box.innerHTML = d.terms.map((t) =>
+      `<div class="keep-row"><code>${escapeHtml(t)}</code>` +
+      `<button class="ghost-btn danger" data-keep-del="${escapeHtml(t)}" ` +
+      `style="padding:4px 10px;font-size:12px;">Remove</button></div>`).join("");
+  } catch (e) {
+    box.innerHTML = `<p class="status err">Could not load the list.</p>`;
+  }
+}
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest && e.target.closest("[data-keep-del]");
+  if (!btn) return;
+  await fetch("/keep_terms/delete", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ term: btn.dataset.keepDel }),
+  });
+  loadKeepTerms();
+  if (typeof runPreview === "function") runPreview();
+});

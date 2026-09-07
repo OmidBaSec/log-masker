@@ -110,7 +110,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "refers to the same real value. Do NOT try to guess the real values. "
     "ALWAYS keep the placeholders verbatim in your answer (do not alter, split, "
     "translate, or reformat them) so they can be restored afterwards.\n\n"
-    "Analyse the logs for security-relevant findings: signs of compromise, "
+    "Analyze the logs for security-relevant findings: signs of compromise, "
     "suspicious authentication, privilege escalation, data exfiltration, "
     "misconfigurations, anomalies, and indicators of attack. Be specific and "
     "reference the placeholder identifiers involved."
@@ -199,6 +199,11 @@ class BuiltinPatternRequest(BaseModel):
 
 class BuiltinPatternResetRequest(BaseModel):
     id: str
+
+
+class KeepTermRequest(BaseModel):
+    term: str
+    forget_from_vault: bool = True
 
 
 class RegexLabRequest(BaseModel):
@@ -729,6 +734,44 @@ def update_builtin_pattern(req: BuiltinPatternRequest):
     return {"ok": True}
 
 
+# --- Never-mask list ------------------------------------------------------
+# The mirror of custom terms, for the other half of the problem: masking fired
+# on something that identifies nobody. Editing a regex is the right answer
+# when a whole *class* of value is wrong; when one particular value is wrong,
+# this is.
+@app.get("/keep_terms")
+def list_keep_terms():
+    return {"terms": store.get_keep_terms()}
+
+
+@app.post("/keep_terms")
+def add_keep_term(req: KeepTermRequest):
+    """Rule one value non-sensitive, and stop the vault re-masking it.
+
+    Forgetting the vault entry matters as much as the rule itself: the vault
+    re-masks every value it has ever seen, so a value learned before the
+    ruling would keep coming back masked and the rule would look broken."""
+    term = (req.term or "").strip()
+    try:
+        store.add_keep_term(term)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    forgotten = []
+    if req.forget_from_vault:
+        for entity in vault.entities():
+            if (entity.get("value") or "").strip().lower() == term.lower():
+                if vault.forget(entity["placeholder"]):
+                    forgotten.append(entity["placeholder"])
+    return {"ok": True, "terms": store.get_keep_terms(),
+            "forgotten": forgotten}
+
+
+@app.post("/keep_terms/delete")
+def delete_keep_term(req: KeepTermRequest):
+    store.delete_keep_term(req.term)
+    return {"ok": True, "terms": store.get_keep_terms()}
+
+
 # --- Regex workbench ------------------------------------------------------
 # Everything here runs on this machine. The whole reason it exists is that a
 # log too sensitive to send to a provider is also too sensitive to paste into
@@ -814,8 +857,9 @@ def preview(req: PreviewRequest):
     terms = _merged_terms(req.custom_terms)
     base, floors = _vault_seed(cfg)
     masked, mapping = masker.mask(req.logs, req.categories, terms,
-                                  store.get_patterns(), base, floors)
-    warnings = leakguard.scan(masked, mapping, terms, req.categories)
+                                  store.get_patterns(), base, floors, keep_terms=store.get_keep_terms())
+    warnings = leakguard.scan(masked, mapping, terms, req.categories,
+                             keep_terms=store.get_keep_terms())
     used = _used_mapping(mapping, masked)
     return {"masked": masked, "mapping": used, "count": len(used),
             "warnings": warnings}
@@ -830,7 +874,7 @@ def preview_prompt(req: PromptPreviewRequest):
     terms = _merged_terms(req.custom_terms)
     base, floors = _vault_seed(cfg)
     masked, mapping = masker.mask(req.logs, req.categories, terms,
-                                  store.get_patterns(), base, floors)
+                                  store.get_patterns(), base, floors, keep_terms=store.get_keep_terms())
     system = build_system(cfg, req.use_system, req.instructions, req.structured)
     used = _used_mapping(mapping, masked)
     if _vault_on(cfg) and req.vault_context:
@@ -922,7 +966,7 @@ async def convert_xlsx(file: UploadFile = File(...)):
 
 
 # ---------------------------------------------------------------------------
-# Conversations. Each "Mask & Analyse" starts one; follow-up questions are sent
+# Conversations. Each "Analyze by AI" starts one; follow-up questions are sent
 # with the full (masked) history so the AI keeps context. State lives only in
 # this process's memory — ending the conversation (or restarting the server)
 # forgets it. The cumulative mapping keeps placeholders consistent across turns.
@@ -1158,13 +1202,14 @@ def analyze(req: AnalyzeRequest):
     terms = _merged_terms(req.custom_terms)
     base, floors = _vault_seed(cfg)
     masked, mapping = masker.mask(req.logs, req.categories, terms,
-                                  store.get_patterns(), base, floors)
+                                  store.get_patterns(), base, floors, keep_terms=store.get_keep_terms())
     used = _used_mapping(mapping, masked)   # entities of THIS log only
 
     # 2. Pre-send leak guard: independent second pass over the MASKED text.
     #    Blocking findings stop everything here — nothing has left the machine
     #    and no conversation exists — until the analyst acknowledges.
-    warnings = leakguard.scan(masked, mapping, terms, req.categories)
+    warnings = leakguard.scan(masked, mapping, terms, req.categories,
+                             keep_terms=store.get_keep_terms())
     if leakguard.has_blocking(warnings) and not req.acknowledge_leaks:
         return {"blocked": True, "warnings": warnings,
                 "masked_count": len(used)}
@@ -1236,7 +1281,7 @@ def chat_followup(req: FollowUpRequest):
     conv = CONVERSATIONS.get(req.conversation_id)
     if not conv:
         raise HTTPException(404, "This conversation has ended (or the server "
-                                 "restarted). Analyse a log to start a new one.")
+                                 "restarted). Analyze a log to start a new one.")
     question = req.question.strip()
     if not question:
         raise HTTPException(400, "The question is empty.")
@@ -1253,12 +1298,13 @@ def chat_followup(req: FollowUpRequest):
     masked_q, mapping = masker.mask(question, conv["categories"],
                                     conv["custom_terms"],
                                     store.get_patterns(),
-                                    base, floors)
+                                    base, floors, keep_terms=store.get_keep_terms())
     # Pre-send leak guard on the masked question (an analyst can paste raw
     # log content into a follow-up too). Nothing is appended or sent while
     # blocked.
     warnings = leakguard.scan(masked_q, mapping, conv["custom_terms"],
-                              conv["categories"])
+                              conv["categories"],
+                             keep_terms=store.get_keep_terms())
     if leakguard.has_blocking(warnings) and not req.acknowledge_leaks:
         return {"blocked": True, "warnings": warnings,
                 "conversation_id": req.conversation_id}

@@ -764,7 +764,7 @@ body {
   box-shadow: var(--shadow-lg); min-height: 0;
 }
 /* Left column has lots of stacked controls — let it scroll internally so the
-   Prompt section + analyse button stay reachable. The template dropdown opens
+   Prompt section + analyze button stay reachable. The template dropdown opens
    upward, staying within this scroll area. */
 #inputPanel { overflow-y: auto; }
 /* These sit in the scrolling flex column. Their overflow:hidden gives them an
@@ -900,16 +900,32 @@ details.settings-section[open] .settings-trigger::after { transform: rotate(180d
   font-size: 0.9em; cursor: help; position: relative;
 }
 .tooltip-card {
-  position: absolute; bottom: calc(100% + 8px); left: 50%;
+  /* Fixed, not absolute, and positioned by placeTooltip(). The masked text
+     sits in a <pre> that scrolls, inside a pane that scrolls, inside a panel
+     with overflow:hidden -- an absolutely-positioned card drawn above the
+     placeholder is clipped by the first of those, so the tooltip for anything
+     on the first line was simply never visible. */
+  position: fixed; top: 0; left: 0;
   transform: translateX(-50%) translateY(4px); background-color: var(--bg-sidebar);
   border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 8px 12px;
   font-size: 11px; color: var(--text-main); box-shadow: var(--shadow-lg); z-index: 50;
-  pointer-events: none; opacity: 0; transition: var(--transition-smooth);
+  pointer-events: none; opacity: 0;
+  /* Fade and lift only. --transition-smooth is "all", which would animate the
+     left/top that showTooltip() sets — so the card would slide across the
+     screen from wherever it was last shown, on every hover. */
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   width: max-content; max-width: 250px; white-space: normal; text-align: left;
 }
 .tooltip-card code { font-family: var(--font-mono); color: var(--on-accent-tint); }
-.restored-badge:hover .tooltip-card,
-.masked-placeholder:hover .tooltip-card { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* Shown by showTooltip(), which also places it. The card is a child of <body>
+   rather than of the token: .work-panel's backdrop-filter makes it the
+   containing block for fixed descendants and clips them, so a card rendered
+   inside the masked text can never be seen. */
+.tooltip-card { visibility: hidden; }
+.tooltip-card.visible {
+  visibility: visible; opacity: 1; transform: translateX(-50%) translateY(0);
+}
 
 /* Setup Slide-out Drawer Panel */
 .drawer {
@@ -1236,3 +1252,97 @@ details.settings-section[open] .settings-trigger::after { transform: rotate(180d
 .wb-result .wb-match { font-family: var(--mono); }
 .wb-result .wb-drop { color: var(--amber); }
 .wb-side { color: var(--amber); font-size: 12px; margin-top: 8px; display: block; }
+
+/* --- Regex workbench, inline under the masked output --------------------- */
+/* It lives where the problem is noticed, so it stays collapsed and narrow
+   until something actually got through. */
+.wb-inline {
+  margin-top: 16px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel-2); padding: 0 14px;
+}
+.wb-inline > summary {
+  cursor: pointer; padding: 12px 0; font-size: 13px; font-weight: 600;
+  list-style: none; color: var(--text);
+}
+.wb-inline > summary::-webkit-details-marker { display: none; }
+.wb-inline > summary::before { content: "▸ "; color: var(--muted); }
+.wb-inline[open] > summary::before { content: "▾ "; }
+.wb-inline[open] { padding-bottom: 14px; }
+.wb-inline-row {
+  display: flex; gap: 8px; align-items: flex-end; margin-bottom: 10px;
+}
+.wb-sample-wrap > summary {
+  cursor: pointer; font-size: 12px; color: var(--muted); padding: 4px 0;
+}
+.wb-sample-wrap textarea {
+  width: 100%; margin-top: 6px; font-family: var(--mono); font-size: 12px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px; resize: vertical;
+}
+.wb-suggestions {
+  display: flex; flex-direction: column; gap: 12px; margin-top: 12px;
+}
+
+/* The masked pane grew a workbench underneath it. .work-panel is
+   overflow:hidden by design, so without a scroller of its own the pane simply
+   clips anything past the fold -- the diagnosis renders and cannot be reached.
+   Same treatment the input column already gets: scroll inside the panel. */
+#pane-sent { overflow-y: auto; min-height: 0; }
+/* The masked text still fills the pane when the workbench is shut (flex: 1),
+   and shrinks to its floor when it is open so there is something to scroll
+   into. Everything else keeps its natural height instead of being squashed. */
+#pane-sent .sent-head,
+#pane-sent #sentWarnings,
+#pane-sent .wb-inline,
+#pane-sent .sent-map { flex-shrink: 0; }
+
+/* --- Collapsible sidebar ------------------------------------------------- */
+/* Slid out by a negative margin rather than a width of 0: the nav keeps its
+   250px layout while it moves, so nothing inside reflows or wraps on the way
+   out and back. */
+.sidebar { transition: margin-left 0.18s ease; }
+html.sidebar-hidden .sidebar { margin-left: -250px; }
+@media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
+
+/* The toggle sits in the header, so it is still there once the sidebar is
+   gone -- a control that disappears with the thing it hides is a trap. */
+.top-header { gap: 14px; }
+.icon-btn {
+  flex-shrink: 0; width: 34px; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  cursor: pointer; transition: var(--transition-smooth);
+}
+.icon-btn:hover { color: var(--text-main); border-color: var(--color-accent); }
+.icon-btn:focus-visible {
+  outline: none; border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-glow);
+}
+/* Three bars that become a "»" when the menu is hidden, so the button says
+   which way it goes rather than just "menu". */
+.sidebar-toggle-icon, .sidebar-toggle-icon::before, .sidebar-toggle-icon::after {
+  display: block; width: 14px; height: 2px; border-radius: 2px;
+  background: currentColor; transition: var(--transition-smooth);
+}
+.sidebar-toggle-icon { position: relative; }
+.sidebar-toggle-icon::before, .sidebar-toggle-icon::after {
+  content: ""; position: absolute; left: 0;
+}
+.sidebar-toggle-icon::before { top: -5px; }
+.sidebar-toggle-icon::after { top: 5px; }
+html.sidebar-hidden .sidebar-toggle-icon { width: 10px; }
+html.sidebar-hidden .sidebar-toggle-icon::before { top: -5px; width: 14px; }
+html.sidebar-hidden .sidebar-toggle-icon::after { top: 5px; width: 14px; }
+
+/* --- Never-mask terms ---------------------------------------------------- */
+.keep-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px;
+  overflow-y: auto; }
+.keep-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  padding: 6px 10px; font-size: 12px;
+}
+.keep-row code { font-family: var(--font-mono); }
+/* A placeholder that knows its real value is clickable, so say so. */
+.masked-placeholder[data-keep] { cursor: pointer; }

@@ -31,7 +31,7 @@ from log_masker import pricing
 LOG_FILE = paths.data_file("ai_requests.jsonl")
 
 # buckets[provider][model][month] = {requests, in, out, estimated}
-# conversations[id][model]         = the same, for one analyse + its follow-ups
+# conversations[id][model]         = the same, for one analyze + its follow-ups
 _STATE: Dict[str, object] = {"offset": 0, "buckets": {}, "conversations": {}}
 
 

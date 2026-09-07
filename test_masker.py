@@ -192,7 +192,7 @@ def test_sysmon_logs():
     masked, mapping = masker.mask(raw, ALL)
     check("sysmon user masked", "j.doe" not in masked)
     check("sysmon domain user masked", "ACME\\j.doe" in mapping.values())
-    # System paths must survive intact — they are what the AI analyses.
+    # System paths must survive intact — they are what the AI analyzes.
     check("system32 path kept", "C:\\Windows\\System32\\cmd.exe" in masked)
     check("explorer path kept", "C:\\Windows\\explorer.exe" in masked)
     check("profile path structure kept", "C:\\Users\\[USER_" in masked)
@@ -1150,7 +1150,7 @@ def _restore_file(path, content):
 
 def test_custom_store():
     """The global custom-terms / saved-patterns store persists and feeds
-    masking, and those saved terms apply automatically at analyse time."""
+    masking, and those saved terms apply automatically at analyze time."""
     import os
     from log_masker import app as appmod
     from log_masker import store
@@ -1180,7 +1180,7 @@ def test_custom_store():
         store.delete_pattern(0)
         check("pattern deleted", store.get_patterns() == [])
 
-        # Saved terms apply at analyse time without being passed in the request.
+        # Saved terms apply at analyze time without being passed in the request.
         appmod.providers.call = (lambda *a, **k: "Looks fine.")
         appmod.get_api_key = lambda provider: "stub-key"
         store.set_terms(["falcon-project"])
@@ -1681,6 +1681,133 @@ def test_generic_domain_word_is_not_chased_through_prose():
           "ACME7" not in masked)
 
 
+def test_windows_event_message_blob():
+    """A forwarded Windows event puts the whole Message on one line, fields
+    separated by two spaces. Three separate patterns misread that shape."""
+    raw = ("<13>Sep 07 12:03:59 SV-APP-016.acme.lan AgentDevice=WindowsLog\t"
+           "PluginVersion=WC.MSEVEN6.10.0.2.62\tComputer=SV-APP-016.acme.lan\t"
+           "OriginatingComputer=10.4.2.180\tUser=\tDomain=\tEventID=4799\t"
+           "Message=A security-enabled local group membership was enumerated."
+           "  Subject:  Security ID:  NT AUTHORITY\\SYSTEM  Account Name:  "
+           "SV-APP-016$  Account Domain:  ACME  Logon ID:  0x3E7  Group:  "
+           "Security ID:  BUILTIN\\Administrators  Group Name:  Administrators"
+           "  Group Domain:  Builtin  Process Information:  Process ID:  0x740"
+           "  Process Name:  C:\\Windows\\System32\\svchost.exe\n")
+    masked, mapping = masker.mask(raw, ALL)
+
+    # "Group Name:  Administrators  Group Domain: …" has no comma to stop at,
+    # so the value ran to the end of the line and took every field with it.
+    check("no placeholder swallows the rest of the line",
+          all(len(v) < 60 for v in mapping.values()))
+    check("the process path survives",
+          "C:\\Windows\\System32\\svchost.exe" in masked)
+    check("the group domain survives", "Group Domain:  Builtin" in masked)
+
+    # "User=\tDomain=" -- an empty field let the capture skip the tab and take
+    # the next key's own name as its value.
+    check("an empty field does not mask the next key",
+          "Domain" not in mapping.values())
+    check("and the field itself is untouched", "User=\tDomain=" in masked)
+
+    # A four-octet run starting part-way through a dotted string is a version.
+    check("a version string is not an IP address",
+          "WC.MSEVEN6.10.0.2.62" in masked)
+    check("a real address is still masked", "10.4.2.180" not in masked)
+
+    # What should go, still goes.
+    check("the host is masked", "SV-APP-016.acme.lan" not in masked)
+    check("the account domain is masked", "Account Domain:  ACME" not in masked)
+    # And what is excluded on purpose is still excluded.
+    check("built-in accounts stay readable",
+          "NT AUTHORITY\\SYSTEM" in masked and "BUILTIN\\Administrators" in masked)
+
+
+def test_path_components_are_not_hostnames():
+    """"/etc/cron.hourly" is a directory. It is dotted like a domain and the
+    last label is not on any file-extension list, so the FQDN pattern read it
+    as a host and redacted a stock Linux path out of every cron line."""
+    raw = ("<77>Sep  7 12:01:01 SV-LNUX-009 run-parts[1234567]: "
+           "(/etc/cron.hourly) starting 0anacron\n"
+           "systemd[1]: session-42.scope: Succeeded.\n"
+           "/var/log/nginx/access.log.1 rotated, /etc/apt/sources.list.d read\n"
+           "/etc/systemd/system/nginx.service reloaded\n")
+    masked, mapping = masker.mask(raw, ALL)
+    for path in ("/etc/cron.hourly", "session-42.scope", "access.log.1",
+                 "sources.list.d", "nginx.service"):
+        check(f"path component kept: {path}", path in masked)
+    check("the host on the line is still masked", "SV-LNUX-009" not in masked)
+
+    # Suffixes that are on no list at all -- neither a known file extension nor
+    # a domain suffix. Nothing but the path lookbehind keeps these readable,
+    # and ".cf" really is a country TLD, so the shape alone cannot decide.
+    raw = ("postfix/smtpd: reading /etc/postfix/main.cf, /etc/nginx/x.backup "
+           "and /opt/app/config.staging on host web01.acme.local\n")
+    masked, _ = masker.mask(raw, ALL)
+    for path in ("main.cf", "x.backup", "config.staging"):
+        check(f"unlisted path suffix kept: {path}", path in masked)
+    check("the host is still masked", "web01.acme.local" not in masked)
+
+    # A real domain inside a path is still a domain -- the suffix is what
+    # tells them apart -- and it must be masked whole, not from the second
+    # label on ("acme-[HOST_2]").
+    raw = ("vhost /var/www/acme-corp.com/htdocs served by web01.acme.local\n"
+           "GET https://vpn.acme-corp.com/login\n")
+    masked, mapping = masker.mask(raw, ALL)
+    check("a domain in a path is masked", "acme-corp.com" not in masked)
+    check("and masked whole", "acme-" not in masked)
+    check("a URL host is unaffected by the path rule",
+          "vpn.acme-corp.com" not in masked)
+    check("one placeholder for the one domain",
+          sum(1 for v in mapping.values() if v == "acme-corp.com") == 1)
+
+
+def test_never_mask_terms():
+    """The other half of the problem. Masking is best-effort, so it will
+    sometimes fire on something that identifies nobody — and when it is one
+    particular value rather than a whole class, editing a regex is the wrong
+    tool."""
+    raw = ("run-parts on host BUILD-SERVER-01 and host OTHER-NODE-02\n"
+           "second mention of BUILD-SERVER-01 in prose\n")
+    masked, mapping = masker.mask(raw, ALL)
+    check("masked by default", "BUILD-SERVER-01" not in masked)
+
+    masked, mapping = masker.mask(raw, ALL, keep_terms=["BUILD-SERVER-01"])
+    check("kept once ruled non-sensitive", masked.count("BUILD-SERVER-01") == 2)
+    check("and the ruling is confined to that value",
+          "OTHER-NODE-02" not in masked)
+
+    # It has to beat the conversation mapping too. The vault re-masks every
+    # value it has ever seen, so a value learned before the ruling would keep
+    # coming back and the rule would look broken.
+    masked, _ = masker.mask("host BUILD-SERVER-01 again\n", ALL,
+                            base_mapping={"[HOST_9]": "BUILD-SERVER-01"},
+                            keep_terms=["BUILD-SERVER-01"])
+    check("it beats a value the vault already knows",
+          "BUILD-SERVER-01" in masked)
+
+    # Case-insensitive, like the always-mask terms it mirrors.
+    masked, _ = masker.mask("host build-server-01 lower\n", ALL,
+                            keep_terms=["BUILD-SERVER-01"])
+    check("matching ignores case", "build-server-01" in masked)
+
+
+def test_leakguard_does_not_block_a_kept_value():
+    """Ruling a value non-sensitive must not leave the guard blocking every
+    send over it — loudest when the vault learned it before the ruling."""
+    from log_masker import leakguard
+    findings = leakguard.scan("host BUILD-SERVER-01 here",
+                              {"[HOST_9]": "BUILD-SERVER-01"}, [], ALL,
+                              keep_terms=["BUILD-SERVER-01"])
+    check("no blocking finding for a kept value",
+          not leakguard.has_blocking(findings))
+    check("and it is not even warned about",
+          not [f for f in findings if f["value"] == "BUILD-SERVER-01"])
+    findings = leakguard.scan("host BUILD-SERVER-01 here",
+                              {"[HOST_9]": "BUILD-SERVER-01"}, [], ALL)
+    check("without the ruling it still blocks",
+          leakguard.has_blocking(findings))
+
+
 if __name__ == "__main__":
     test_masking_stays_linear()
     test_defender_incident_json()
@@ -1697,6 +1824,10 @@ if __name__ == "__main__":
     test_one_placeholder_per_value()
     test_credit_card_check_digit()
     test_leakguard_agrees_with_the_masker_on_loopback()
+    test_windows_event_message_blob()
+    test_path_components_are_not_hostnames()
+    test_never_mask_terms()
+    test_leakguard_does_not_block_a_kept_value()
     test_powershell_new_aduser()
     test_powershell_credential_in_parens()
     test_sql_connection_string()

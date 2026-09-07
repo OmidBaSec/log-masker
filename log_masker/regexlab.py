@@ -46,7 +46,8 @@ MAX_SUGGESTIONS = 6
 # which on "srcuser=jsmith assetLabel=" hands back "jsmith assetLabel".
 _KEY_TOKEN = re.compile(r"([A-Za-z][A-Za-z0-9_.\-]*)$")
 _KEY_FIELD_LABEL = re.compile(
-    r"(?m)^[ \t]*([A-Za-z][A-Za-z0-9_.\-]*(?:[ ][A-Za-z][A-Za-z0-9_.\-]*){0,2})$")
+    r"(?m)(?:^|[ \t]{2,}|\t|[,;(\[{])[ \t]*"
+    r"([A-Za-z][A-Za-z0-9_.\-]*(?:[ ][A-Za-z][A-Za-z0-9_.\-]*){0,2})$")
 # PowerShell: "-ComputerName ", "-Identity "
 _ANCHOR_PARAM = re.compile(r"(?<![\w-])--?([A-Za-z][A-Za-z0-9\-]{1,30})[ \t]+[\"']?$")
 # XML: "<MachineName>" and Windows event XML's "<Data Name='TargetUserName'>"
@@ -113,7 +114,11 @@ def _value_class(value: str, quoted: bool) -> str:
         return r"[A-Za-z0-9._@\\\-]+"
     if re.fullmatch(r"[^\s\"',;]+", value):
         return r"[^\s\"',;]+"
-    return r"[^\r\n]+"
+    if re.fullmatch(r"[^\t\r\n]+", value):
+        # Spaces inside the value, so it can only end where the next field
+        # begins: two spaces, a tab, or the end of the line.
+        return r"[^\t\r\n]{1,80}?(?=[ ]{2,}|\t|$)"
+    return r"[^\r\n]{1,80}"
 
 
 def _anchor(sample: str, start: int, end: int) -> Dict[str, Optional[str]]:
@@ -317,8 +322,11 @@ def diagnose(sample: str, value: str,
             "run. Turn the category on rather than editing a regex.")
     elif hits:
         verdict, detail = "rejected", (
-            "A pattern matched it and then _accept() threw the value out. "
-            "The fix is usually the allow-list, not the regex.")
+            "A pattern matched it and then an accept rule threw the value "
+            "out, so no regex under that label can rescue it — the rule "
+            "vetoes whatever is captured. Masking it anyway is still your "
+            "call, and the proposals are written under the CUSTOM label, "
+            "which those rules do not police.")
     else:
         verdict, detail = "no_match", (
             "No built-in pattern matches these characters at all. This is "
@@ -414,15 +422,22 @@ def _would_mask(sample: str, cats: List[str], value: str,
 
 
 def _matches_here(regex: str, sample: str, start: int, end: int) -> bool:
-    """Does this candidate capture the value at the position it occupies?"""
+    """Does this candidate capture the value at the position it occupies, and
+    only roughly that much?
+
+    The span check is the important half. A regex that swallows the rest of
+    the line makes the value disappear too, so verifying "the value is gone"
+    would happily recommend it."""
     try:
         compiled = re.compile(regex)
     except re.error:
         return False
+    span = end - start
+    budget = max(span * 3, span + 40)
     for m in compiled.finditer(sample):
         s, e = m.span(m.lastindex) if m.lastindex else m.span()
         if s <= start and e >= end:
-            return True
+            return (e - s) <= budget
     return False
 
 
@@ -469,6 +484,12 @@ def suggest(sample: str, value: str, label: Optional[str] = None,
 
     cats = sorted(enabled if enabled is not None else masker.CATEGORIES)
     label = label or report["label"]
+    overriding = not masker._accept(label, value)
+    if overriding:
+        # Under this label an accept rule vetoes the value whatever regex
+        # captures it. CUSTOM is the label those rules do not police, which
+        # is what "I want it masked regardless" has to mean.
+        label = "CUSTOM"
     anchor = report["anchor"]
     key = anchor["key"]
     sample = sample[:MAX_SAMPLE_CHARS]
@@ -554,6 +575,15 @@ def suggest(sample: str, value: str, label: Optional[str] = None,
             "for this — it is the same thing without a regex to maintain.",
             side_effects=extra_hits, weak=True))
 
+    if overriding:
+        note = (f"This value is excluded on purpose — {report['hits'][0]['reason']}"
+                if report.get("hits") and report["hits"][0].get("reason")
+                else "This value is excluded on purpose.")
+        for pr in proposals:
+            pr["overrides_default"] = True
+            pr["why"] = (f"{note}. Saved under the CUSTOM label it is masked "
+                         f"anyway, because that is your call to make. " + pr["why"])
+    report["overriding"] = overriding
     report["suggestions"] = proposals[:MAX_SUGGESTIONS]
     return report
 

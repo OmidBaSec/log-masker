@@ -2,7 +2,7 @@
 
 Log Masker exists to keep sensitive data out of third-party AI providers, so a
 security bug here can have real consequences for the people whose logs are being
-analysed. Reports are welcome and taken seriously.
+analyzed. Reports are welcome and taken seriously.
 
 ## Reporting a vulnerability
 

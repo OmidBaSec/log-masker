@@ -15,13 +15,18 @@
         theme = saved || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
       } catch (e) { /* storage blocked — stay on the dark default */ }
       document.documentElement.setAttribute("data-theme", theme);
+      try {
+        if (localStorage.getItem("logmasker.sidebar") === "hidden") {
+          document.documentElement.classList.add("sidebar-hidden");
+        }
+      } catch (e) { /* storage blocked — the sidebar stays visible */ }
     })();
   </script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <!-- LEFT SIDEBAR -->
-  <div class="sidebar">
+  <div class="sidebar" id="appSidebar">
     <div class="sidebar-header">
       <span class="sidebar-logo">🛡️</span>
       <div class="sidebar-brand">
@@ -32,7 +37,6 @@
     <div class="sidebar-nav">
       <button class="nav-item active" data-view="workspace">💻 Workspace</button>
       <button class="nav-item" data-view="rules">🧩 Masking Rules</button>
-      <button class="nav-item" data-view="workbench">🔬 Regex Workbench</button>
       <button class="nav-item" data-view="templates">🎯 Prompt Templates</button>
       <button class="nav-item" data-view="vault">🗄️ Entity Vault</button>
       <button class="nav-item" data-view="audit">🛡️ Audit Trail</button>
@@ -47,6 +51,11 @@
 
   <main class="main-content">
     <header class="top-header">
+      <button id="sidebarToggle" class="icon-btn" type="button"
+        aria-controls="appSidebar" aria-expanded="true"
+        title="Hide the menu (⌘B)" aria-label="Hide the menu">
+        <span class="sidebar-toggle-icon" aria-hidden="true"></span>
+      </button>
       <div class="top-title" id="currentViewTitle">Workspace</div>
       <div class="top-actions">
         <div class="theme-switch segmented-control" role="group" aria-label="Colour theme">
@@ -154,7 +163,7 @@
           </details>
 
           <div class="actions" style="display: flex; gap: 12px; margin-top: 16px;">
-            <button id="analyzeBtn" class="btn btn-primary" style="flex: 1;">🔍 Mask &amp; Analyse</button>
+            <button id="analyzeBtn" class="btn btn-primary" style="flex: 1;">🤖 Analyze by AI</button>
           </div>
           <div id="analyzeProgress" class="analyze-progress hidden" role="progressbar" aria-label="Waiting for AI response">
             <div class="analyze-progress-bar"></div>
@@ -186,7 +195,7 @@
                 placeholder="Ask a follow-up question… (masked with the same placeholders; Enter to send, Shift+Enter for newline)"></textarea>
               <div class="chat-buttons" style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
                 <button id="endConvBtn" class="btn btn-danger-ghost"
-                  title="Forget this conversation (history + mapping) so you can analyse a new log">⏹ End conversation</button>
+                  title="Forget this conversation (history + mapping) so you can analyze a new log">⏹ End conversation</button>
                 <button id="sendFollowUp" class="btn btn-primary" type="button">Send ➤</button>
               </div>
             </div>
@@ -209,6 +218,46 @@
             <div class="editor-wrapper">
               <pre id="sent" class="logs-editor"></pre>
             </div>
+
+            <!-- Something got through: fix it here, against this log, without
+                 leaving the page. Collapsed until it is needed. -->
+            <details class="wb-inline" id="wbPanel">
+              <summary>🔬 Something not masked? &mdash; fix the rule here</summary>
+              <p class="hint" style="margin: 10px 0 12px;">
+                Select the value in the masked text above, or type it below.
+                Runs <strong>on this machine</strong> &mdash; no provider call.
+              </p>
+
+              <div class="wb-inline-row">
+                <div style="flex: 2;">
+                  <label class="field-label" for="wbValue" style="margin-top: 0;">Value that should have been masked</label>
+                  <input id="wbValue" class="dropdown mono" type="text" spellcheck="false"
+                    autocomplete="off" placeholder="e.g. WS-FIN-07" style="width: 100%;" />
+                </div>
+                <div style="flex: 1;">
+                  <label class="field-label" for="wbLabel" style="margin-top: 0;">Treat it as</label>
+                  <select id="wbLabel" class="dropdown" style="width: 100%;">
+                    <option value="">Work it out</option>
+                    <option>USER</option><option>HOST</option>
+                    <option>DOMAIN</option><option>EMAIL</option>
+                    <option>IP</option><option>SECRET</option>
+                    <option>ASSET</option><option>ORG</option>
+                  </select>
+                </div>
+                <button id="wbDiagnoseBtn" class="btn btn-primary" style="padding: 10px 18px;">Diagnose</button>
+              </div>
+
+              <details class="wb-sample-wrap" id="wbSampleWrap">
+                <summary>Sample line <span class="hint" id="wbSampleHint"></span></summary>
+                <textarea id="wbSample" class="mono" spellcheck="false" rows="4"
+                  placeholder="The line the value appears in — filled in from the log above."></textarea>
+              </details>
+
+              <p id="wbMsg" class="status"></p>
+              <div id="wbVerdict" class="wb-verdict" hidden></div>
+              <div id="wbHits"></div>
+              <div id="wbSuggestions" class="wb-suggestions"></div>
+            </details>
 
             <div id="sentMapWrap" class="sent-map hidden" style="margin-top: 16px; overflow-y: auto; max-height: 220px;">
               <p class="hint" style="margin-bottom: 8px;">Masked fields — the alias was sent, the real value stayed local:</p>
@@ -246,6 +295,16 @@
           </div>
 
           <div class="panel-header" style="margin-top: 28px;">
+            <h2>Never-Mask Terms</h2>
+          </div>
+          <p class="hint" style="margin-bottom: 12px;">Values ruled
+            <strong>not confidential</strong> — left in the text of every
+            analysis, and beating the entity vault so a value learned earlier
+            stops coming back masked. Add one by clicking a red placeholder in
+            <em>Masked data</em>.</p>
+          <div id="keepTermsList" class="keep-list"></div>
+
+          <div class="panel-header" style="margin-top: 28px;">
             <h2>Custom Regex Rules</h2>
           </div>
           <p class="hint" style="margin-bottom: 12px;">Added regexes are masked automatically in every log. A capture group masks only the group.</p>
@@ -274,67 +333,6 @@
           <p class="hint" style="margin-bottom: 12px;">Regexes grouped by log source. Override a pattern or reset it to default. Stored locally in <code>builtin_overrides.json</code>.</p>
           <p id="builtinMsg" class="status"></p>
           <div id="builtinGroups" style="overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- VIEWPORT: REGEX WORKBENCH -->
-    <div class="viewport" id="workbench-viewport">
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; height: 100%; min-height: 0;">
-
-        <!-- Left: the value that got through -->
-        <div class="work-panel">
-          <div class="panel-header">
-            <h2>Something Slipped Through</h2>
-          </div>
-          <p class="hint" style="margin-bottom: 12px;">
-            Paste the line it slipped through in and name the value.
-            Everything here runs <strong>on this machine</strong> — no provider
-            call, nothing leaves. That is the point: a log too sensitive to
-            send is too sensitive to paste into an online regex tester.
-          </p>
-
-          <label class="field-label" for="wbSample">Sample line</label>
-          <textarea id="wbSample" class="mono" spellcheck="false" rows="7"
-            placeholder="  Requesting Workstation:   WS-FIN-07"></textarea>
-
-          <div style="display: flex; gap: 8px; margin-top: 12px; align-items: flex-end;">
-            <div style="flex: 2;">
-              <label class="field-label" for="wbValue">Value that should have been masked</label>
-              <input id="wbValue" class="dropdown mono" type="text" spellcheck="false"
-                autocomplete="off" placeholder="WS-FIN-07" style="width: 100%;" />
-            </div>
-            <div style="flex: 1;">
-              <label class="field-label" for="wbLabel">Treat it as</label>
-              <select id="wbLabel" class="dropdown" style="width: 100%;">
-                <option value="">Work it out</option>
-                <option>USER</option><option>HOST</option>
-                <option>DOMAIN</option><option>EMAIL</option>
-                <option>IP</option><option>SECRET</option>
-                <option>ASSET</option><option>ORG</option>
-              </select>
-            </div>
-            <button id="wbDiagnoseBtn" class="btn btn-primary" style="padding: 10px 18px;">Diagnose</button>
-          </div>
-          <p id="wbMsg" class="status"></p>
-
-          <div id="wbVerdict" class="wb-verdict" hidden></div>
-          <div id="wbHits" style="overflow-y: auto; flex: 1; min-height: 0;"></div>
-        </div>
-
-        <!-- Right: what to change -->
-        <div class="work-panel">
-          <div class="panel-header">
-            <h2>Proposed Change</h2>
-          </div>
-          <p class="hint" style="margin-bottom: 12px;">
-            Each proposal is <strong>verified before it is offered</strong>: applied
-            at the pattern's real priority, the value is gone. Edit it, test it
-            against the sample, then save.
-          </p>
-          <div id="wbSuggestions" style="overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;">
-            <p class="hint">Diagnose a value to see proposals here.</p>
-          </div>
         </div>
       </div>
     </div>

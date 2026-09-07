@@ -174,6 +174,86 @@ def test_sample_and_value_must_line_up():
     check("an empty value is refused", not regexlab.suggest("x", "")["ok"])
 
 
+# A forwarded Windows event: one line, fields two spaces apart, and the value
+# the analyst wants is one the masker excludes on purpose.
+WINEVENT = ("<13>Sep 07 12:03:59 SV-APP-016.acme.lan\tUser=\tDomain=\t"
+            "EventID=4799\tMessage=A group membership was enumerated."
+            "  Subject:  Security ID:  NT AUTHORITY\\SYSTEM  Account Name:  "
+            "SV-APP-016$  Account Domain:  ACME  Logon ID:  0x3E7  Group:  "
+            "Security ID:  BUILTIN\\Administrators  Group Name:  "
+            "Administrators  Process Name:  C:\\Windows\\System32\\svchost.exe\n")
+
+
+def test_reads_a_multi_word_field_label_mid_line():
+    """"Security ID:" is the anchor. Reading only the last word gives "ID",
+    which EventID, Logon ID and Process ID all share and which anchors
+    nothing -- the regex built on it ate the rest of the line."""
+    r = regexlab.suggest(WINEVENT, "NT AUTHORITY\\SYSTEM")
+    check("the whole field label is the key",
+          r["anchor"]["key"] == "Security ID")
+
+
+def test_will_not_recommend_a_line_eater():
+    """Verifying "the value is gone" is not enough on its own: a regex that
+    swallows the rest of the line also makes the value disappear."""
+    r = regexlab.suggest(WINEVENT, "NT AUTHORITY\\SYSTEM")
+    for s in r["suggestions"]:
+        _masked, mapping = masker.mask(
+            WINEVENT, ALL, custom_patterns=[{"label": s["label"],
+                                             "regex": s["regex"]}])
+        longest = max((len(v) for v in mapping.values()), default=0)
+        check(f"{s['kind']} masks no runaway span ({longest} chars)",
+              longest < 60)
+
+
+def test_span_budget_rejects_an_over_broad_candidate():
+    """_matches_here is a second, independent guard against a line-eater: even
+    a candidate that captures the value is refused if it captures half the log
+    with it. Pinned on its own, because the bounded value class happens to
+    prevent the same outcome and would otherwise mask a regression here."""
+    sample = "Security ID:  NT AUTHORITY\\SYSTEM  Account Name:  SV-01$  " \
+             "Logon ID:  0x3E7  Process Name:  C:\\Windows\\svchost.exe"
+    start = sample.index("NT AUTHORITY")
+    end = start + len("NT AUTHORITY\\SYSTEM")
+    tight = r"Security ID:\s+([^\t\r\n]{1,80}?(?=[ ]{2,}|$))"
+    greedy = r"Security ID:\s+(.+)$"
+    check("a tight candidate is accepted",
+          regexlab._matches_here(tight, sample, start, end))
+    check("one that swallows the line is not",
+          not regexlab._matches_here(greedy, sample, start, end))
+
+
+def test_offers_a_way_to_override_a_deliberate_exclusion():
+    """NT AUTHORITY\\SYSTEM is excluded on purpose, and no regex under the USER
+    label can rescue it -- the accept rule vetoes whatever is captured. That
+    is still the analyst's call to make, so there has to be a route."""
+    r = regexlab.suggest(WINEVENT, "NT AUTHORITY\\SYSTEM")
+    check("the verdict is honest about it", r["verdict"] == "rejected")
+    check("and it is flagged as an override", r["overriding"])
+    check("a proposal is offered anyway", len(r["suggestions"]) > 0)
+    top = r["suggestions"][0]
+    check("under a label the accept rules do not police",
+          top["label"] == "CUSTOM")
+    check("the reason is repeated in the proposal",
+          "excluded on purpose" in top["why"])
+    # The point of the whole exercise: saved, it actually masks.
+    masked, _ = masker.mask(WINEVENT, ALL, custom_patterns=[
+        {"label": top["label"], "regex": top["regex"]}])
+    check("saving it masks the value", "NT AUTHORITY\\SYSTEM" not in masked)
+    # And the field, not just the one value: the second Security ID too.
+    check("and the other Security ID in the same log",
+          "BUILTIN\\Administrators" not in masked)
+
+
+def test_a_proposal_under_a_vetoed_label_is_never_offered():
+    """The failure this replaced: a regex that looked right, saved cleanly,
+    and then masked nothing, because _accept threw the value out every run."""
+    r = regexlab.suggest(WINEVENT, "NT AUTHORITY\\SYSTEM")
+    for s in r["suggestions"]:
+        check(f"{s['kind']} is not offered under a vetoed label",
+              masker._accept(s["label"], "NT AUTHORITY\\SYSTEM"))
+
+
 if __name__ == "__main__":
     test_diagnosis_tells_the_four_apart()
     test_no_suggestions_when_a_regex_is_not_the_fix()
@@ -184,4 +264,9 @@ if __name__ == "__main__":
     test_try_regex_reports_matches_and_rejections()
     test_every_rejection_has_a_reason()
     test_sample_and_value_must_line_up()
+    test_reads_a_multi_word_field_label_mid_line()
+    test_will_not_recommend_a_line_eater()
+    test_span_budget_rejects_an_over_broad_candidate()
+    test_offers_a_way_to_override_a_deliberate_exclusion()
+    test_a_proposal_under_a_vetoed_label_is_never_offered()
     print("\nAll regex workbench tests passed.")
