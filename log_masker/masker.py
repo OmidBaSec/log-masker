@@ -1624,7 +1624,8 @@ def mask(text: str, enabled: List[str],
          custom_terms: List[str] = None,
          custom_patterns: List[Dict[str, str]] = None,
          base_mapping: Dict[str, str] = None,
-         base_counters: Dict[str, int] = None) -> Tuple[str, Dict[str, str]]:
+         base_counters: Dict[str, int] = None,
+         builtin_patches: Dict[str, str] = None) -> Tuple[str, Dict[str, str]]:
     """
     Return (masked_text, mapping) where mapping maps placeholder -> real value.
 
@@ -1643,10 +1644,24 @@ def mask(text: str, enabled: List[str],
     `base_counters` sets per-label numbering floors on top of what
     `base_mapping` implies. The entity vault uses this so that a forgotten
     entity's number is retired: a new value can never inherit an old alias.
+    `builtin_patches` maps a built-in pattern id to a replacement regex for
+    this call only. The regex workbench uses it to answer "would this edit
+    have caught the value?" at the pattern's real priority, without saving an
+    override, and without a global swap that a concurrent request could see.
     """
     enabled_set = set(enabled)
 
     patterns = list(_PATTERNS)
+    for pattern_id, replacement in (builtin_patches or {}).items():
+        for i, (pid, _src, _note) in enumerate(_PATTERN_META):
+            if pid != pattern_id:
+                continue
+            try:
+                cat, label, _rx = patterns[i]
+                patterns[i] = (cat, label, re.compile(replacement))
+            except re.error:
+                pass                # a broken candidate leaves the default
+            break
     # User-defined persistent regexes, above the built-ins. A regex that fails
     # to compile is skipped rather than breaking the whole mask run.
     for cp in reversed(custom_patterns or []):

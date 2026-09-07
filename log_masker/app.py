@@ -40,6 +40,7 @@ from log_masker import keystore
 from log_masker import masker
 from log_masker import paths
 from log_masker import providers
+from log_masker import regexlab
 from log_masker import m365
 from log_masker import templates
 from log_masker import verdict as verdict_mod
@@ -198,6 +199,20 @@ class BuiltinPatternRequest(BaseModel):
 
 class BuiltinPatternResetRequest(BaseModel):
     id: str
+
+
+class RegexLabRequest(BaseModel):
+    sample: str
+    value: str
+    label: Optional[str] = None
+    categories: Optional[List[str]] = None
+
+
+class RegexTryRequest(BaseModel):
+    sample: str
+    regex: str
+    label: str = "CUSTOM"
+    categories: Optional[List[str]] = None
 
 
 class FollowUpRequest(BaseModel):
@@ -712,6 +727,23 @@ def update_builtin_pattern(req: BuiltinPatternRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
+
+
+# --- Regex workbench ------------------------------------------------------
+# Everything here runs on this machine. The whole reason it exists is that a
+# log too sensitive to send to a provider is also too sensitive to paste into
+# an online regex tester, so the tool that fixes the masking has to live
+# behind the same wall as the data.
+@app.post("/regexlab/suggest")
+def regexlab_suggest(req: RegexLabRequest):
+    """Why did this value survive masking, and what regex change fixes it?"""
+    return regexlab.suggest(req.sample, req.value, req.label, req.categories)
+
+
+@app.post("/regexlab/try")
+def regexlab_try(req: RegexTryRequest):
+    """Run one candidate against the sample without saving anything."""
+    return regexlab.try_regex(req.sample, req.regex, req.label, req.categories)
 
 
 @app.post("/builtin_patterns/reset")

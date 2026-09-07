@@ -32,6 +32,7 @@
     <div class="sidebar-nav">
       <button class="nav-item active" data-view="workspace">💻 Workspace</button>
       <button class="nav-item" data-view="rules">🧩 Masking Rules</button>
+      <button class="nav-item" data-view="workbench">🔬 Regex Workbench</button>
       <button class="nav-item" data-view="templates">🎯 Prompt Templates</button>
       <button class="nav-item" data-view="vault">🗄️ Entity Vault</button>
       <button class="nav-item" data-view="audit">🛡️ Audit Trail</button>
@@ -273,6 +274,67 @@
           <p class="hint" style="margin-bottom: 12px;">Regexes grouped by log source. Override a pattern or reset it to default. Stored locally in <code>builtin_overrides.json</code>.</p>
           <p id="builtinMsg" class="status"></p>
           <div id="builtinGroups" style="overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEWPORT: REGEX WORKBENCH -->
+    <div class="viewport" id="workbench-viewport">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; height: 100%; min-height: 0;">
+
+        <!-- Left: the value that got through -->
+        <div class="work-panel">
+          <div class="panel-header">
+            <h2>Something Slipped Through</h2>
+          </div>
+          <p class="hint" style="margin-bottom: 12px;">
+            Paste the line it slipped through in and name the value.
+            Everything here runs <strong>on this machine</strong> — no provider
+            call, nothing leaves. That is the point: a log too sensitive to
+            send is too sensitive to paste into an online regex tester.
+          </p>
+
+          <label class="field-label" for="wbSample">Sample line</label>
+          <textarea id="wbSample" class="mono" spellcheck="false" rows="7"
+            placeholder="  Requesting Workstation:   WS-FIN-07"></textarea>
+
+          <div style="display: flex; gap: 8px; margin-top: 12px; align-items: flex-end;">
+            <div style="flex: 2;">
+              <label class="field-label" for="wbValue">Value that should have been masked</label>
+              <input id="wbValue" class="dropdown mono" type="text" spellcheck="false"
+                autocomplete="off" placeholder="WS-FIN-07" style="width: 100%;" />
+            </div>
+            <div style="flex: 1;">
+              <label class="field-label" for="wbLabel">Treat it as</label>
+              <select id="wbLabel" class="dropdown" style="width: 100%;">
+                <option value="">Work it out</option>
+                <option>USER</option><option>HOST</option>
+                <option>DOMAIN</option><option>EMAIL</option>
+                <option>IP</option><option>SECRET</option>
+                <option>ASSET</option><option>ORG</option>
+              </select>
+            </div>
+            <button id="wbDiagnoseBtn" class="btn btn-primary" style="padding: 10px 18px;">Diagnose</button>
+          </div>
+          <p id="wbMsg" class="status"></p>
+
+          <div id="wbVerdict" class="wb-verdict" hidden></div>
+          <div id="wbHits" style="overflow-y: auto; flex: 1; min-height: 0;"></div>
+        </div>
+
+        <!-- Right: what to change -->
+        <div class="work-panel">
+          <div class="panel-header">
+            <h2>Proposed Change</h2>
+          </div>
+          <p class="hint" style="margin-bottom: 12px;">
+            Each proposal is <strong>verified before it is offered</strong>: applied
+            at the pattern's real priority, the value is gone. Edit it, test it
+            against the sample, then save.
+          </p>
+          <div id="wbSuggestions" style="overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;">
+            <p class="hint">Diagnose a value to see proposals here.</p>
+          </div>
         </div>
       </div>
     </div>

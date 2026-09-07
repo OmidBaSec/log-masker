@@ -9,6 +9,25 @@ versions follow [Semantic Versioning][semver].
 ## [Unreleased]
 
 ### Added
+- **Regex workbench** (`🔬 Regex Workbench`): paste the line a value slipped
+  through in, name the value, and get the regex change that fixes it —
+  entirely on this machine. A log too sensitive to hand an AI provider is also
+  too sensitive to paste into an online regex tester, so the tool that repairs
+  the masking now lives behind the same wall as the data.
+  - Separates the four reasons a value survives, because they have four
+    different fixes: nothing matched, a pattern matched and an accept rule
+    dropped the value (it names the rule), a protected span claimed it, or a
+    higher-priority pattern got there first.
+  - Prefers widening the built-in that should have caught the value over
+    adding a new pattern, and picks the right one: an indented
+    `Requesting Workstation:` line goes to the Windows Event Log pattern, not
+    to the generic `host=` one.
+  - Every proposal is verified at the pattern's real priority before it is
+    offered, and each shows what else it would newly mask in the sample.
+  - `mask()` takes `builtin_patches` so a candidate can be previewed at its
+    true priority without saving an override or swapping global state that a
+    concurrent request could see.
+
 - **Masking for cloud and SaaS log sources**: AWS CloudTrail, AWS Config,
   AWS S3, AWS Security Hub, Okta, OneLogin, Duo Security, JumpCloud, Entra ID,
   GitHub, Atlassian Jira, Zoom, DocuSign, Dynamics 365, Power Platform, GCP,

@@ -206,6 +206,7 @@ function showTab(name) {
 // --- Sidebar viewport navigation -----------------------------------------
 const VIEW_TITLES = {
   workspace: "Workspace", rules: "Masking Rules",
+  workbench: "Regex Workbench",
   templates: "Prompt Templates", vault: "Entity Vault", audit: "Audit Trail",
 };
 let loadedViews = {};   // lazy-load each secondary dashboard once
@@ -2625,3 +2626,201 @@ $("creditRefresh").addEventListener("click", async (e) => {
 });
 
 loadCredits();
+
+// ==========================================================================
+// Regex workbench
+//
+// The loop an analyst actually runs: a value got through, why, and what do I
+// change. Every request here goes to the local server and no further -- the
+// tool exists precisely so that a log too sensitive to hand a provider is not
+// pasted into an online regex tester instead.
+// ==========================================================================
+
+// How a verdict reads, and whether a regex is even the right thing to edit.
+const WB_VERDICTS = {
+  no_match: { css: "fixable", title: "No pattern matches this",
+    fix: "This is the case a regex change fixes." },
+  rejected: { css: "elsewhere", title: "Matched, then deliberately dropped",
+    fix: "A pattern found it and an accept rule threw it out. Usually the "
+       + "allow-list is the thing to change, not the regex." },
+  protected: { css: "elsewhere", title: "Deliberately kept",
+    fix: "A protected span claimed it. These are values that identify nobody "
+       + "-- file hashes, vendor ids -- and keeping them is on purpose." },
+  claimed_earlier: { css: "elsewhere", title: "Claimed by a higher-priority pattern",
+    fix: "Widening a regex will not help; the pattern that got there first is "
+       + "the one to look at." },
+  category_off: { css: "elsewhere", title: "Its category is switched off",
+    fix: "Turn the category on for the run rather than editing a regex." },
+  already_masked: { css: "ok", title: "Already masked",
+    fix: "The current patterns handle this value." },
+};
+
+function wbMsg(text, isError) {
+  const el = $("wbMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "status" + (isError ? " err" : "");
+}
+
+function wbRenderVerdict(report) {
+  const box = $("wbVerdict");
+  const v = WB_VERDICTS[report.verdict] || { css: "fixable", title: report.verdict, fix: "" };
+  const anchor = report.anchor || {};
+  const where = anchor.key
+    ? ` It sits after <code>${escapeHtml(anchor.key)}</code> (${escapeHtml(anchor.kind)}).`
+    : " Nothing in the line anchors it, so only its own shape identifies it.";
+  box.className = "wb-verdict " + v.css;
+  box.innerHTML =
+    `<span class="wb-title">${escapeHtml(v.title)}</span>` +
+    `${escapeHtml(report.detail || v.fix)}` +
+    `<br><br>Read as <strong>${escapeHtml(report.label)}</strong>, ` +
+    `${report.occurrences} occurrence${report.occurrences === 1 ? "" : "s"} in the sample.` +
+    where;
+  box.hidden = false;
+}
+
+function wbRenderHits(report) {
+  const box = $("wbHits");
+  if (!report.hits || !report.hits.length) { box.innerHTML = ""; return; }
+  box.innerHTML = "<p class=\"hint\" style=\"margin-top:16px\">Patterns that touched this position:</p>" +
+    report.hits.map((h) =>
+      `<div class="wb-hit"><span class="wb-id">${escapeHtml(h.id)}</span>` +
+      ` &middot; ${escapeHtml(h.source)} &rarr; [${escapeHtml(h.label)}]<br>` +
+      `matched <code>${escapeHtml(h.matched)}</code>` +
+      (h.accepted ? "" :
+        `<span class="wb-reason">dropped because ${escapeHtml(h.reason || "")}</span>`) +
+      (h.category_on ? "" :
+        `<span class="wb-reason">its category is off for this run</span>`) +
+      `</div>`).join("");
+}
+
+function wbRenderSuggestions(report) {
+  const box = $("wbSuggestions");
+  const list = report.suggestions || [];
+  if (!list.length) {
+    box.innerHTML = `<p class="hint">No regex change is proposed — see the ` +
+      `verdict on the left for where the fix belongs.</p>`;
+    return;
+  }
+  box.innerHTML = list.map((s, i) => {
+    const isBuiltin = s.kind === "extend_builtin";
+    const kindLabel = isBuiltin ? `Widen “${escapeHtml(s.source)}”`
+      : s.kind === "new_pattern" ? "New saved pattern" : "Exact value only";
+    return `<div class="wb-card ${i === 0 && !s.weak ? "recommended" : ""}" data-idx="${i}">
+      <span class="wb-kind">${kindLabel}${i === 0 && !s.weak ? '<span class="wb-pill">recommended</span>' : ""}</span>
+      <p class="wb-why">${escapeHtml(s.why)}</p>
+      <textarea data-role="rx" spellcheck="false">${escapeHtml(s.regex)}</textarea>
+      ${(s.side_effects && s.side_effects.length > 1)
+        ? `<span class="wb-side">Also newly masks in this sample: ` +
+          s.side_effects.map((x) => `<code>${escapeHtml(x)}</code>`).join(", ") + `</span>`
+        : ""}
+      <div class="wb-actions">
+        <button class="ghost-btn" data-act="test" style="padding:6px 12px;">Test</button>
+        <button class="btn btn-primary" data-act="save" style="padding:6px 14px;">
+          ${isBuiltin ? "Save as override" : "Save pattern"}</button>
+        <span class="status" data-role="msg" style="margin:0;"></span>
+      </div>
+      <div class="wb-result" data-role="result"></div>
+    </div>`;
+  }).join("");
+
+  box.querySelectorAll(".wb-card").forEach((card) => {
+    const s = list[Number(card.dataset.idx)];
+    card.querySelector('[data-act="test"]')
+        .addEventListener("click", () => wbTest(card, s));
+    card.querySelector('[data-act="save"]')
+        .addEventListener("click", () => wbSave(card, s));
+  });
+}
+
+async function wbDiagnose() {
+  const sample = $("wbSample").value;
+  const value = $("wbValue").value.trim();
+  if (!sample.trim() || !value) {
+    wbMsg("Give both the sample line and the value that got through.", true);
+    return;
+  }
+  wbMsg("Working locally…");
+  try {
+    const r = await fetch("/regexlab/suggest", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sample, value, label: $("wbLabel").value || null }),
+    });
+    const d = await r.json();
+    if (!d.ok) { wbMsg(d.error || "Could not diagnose that.", true); return; }
+    wbMsg("");
+    wbRenderVerdict(d);
+    wbRenderHits(d);
+    wbRenderSuggestions(d);
+  } catch (e) {
+    wbMsg("Could not reach the local server.", true);
+  }
+}
+
+async function wbTest(card, suggestion) {
+  const rx = card.querySelector('[data-role="rx"]').value;
+  const out = card.querySelector('[data-role="result"]');
+  const msg = card.querySelector('[data-role="msg"]');
+  msg.textContent = "";
+  const r = await fetch("/regexlab/try", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sample: $("wbSample").value, regex: rx,
+                           label: suggestion.label }),
+  });
+  const d = await r.json();
+  if (!d.ok) {
+    out.innerHTML = `<span class="wb-drop">${escapeHtml(d.error)}</span>`;
+    return;
+  }
+  if (!d.matches.length) {
+    out.innerHTML = `<span class="wb-drop">Matches nothing in the sample.</span>`;
+    return;
+  }
+  out.innerHTML = `Masks ` + d.matches.map((m) =>
+    m.accepted
+      ? `<code class="wb-match">${escapeHtml(m.text)}</code>`
+      : `<code class="wb-match">${escapeHtml(m.text)}</code>` +
+        `<span class="wb-drop"> (dropped: ${escapeHtml(m.reason || "")})</span>`
+  ).join(", ");
+}
+
+async function wbSave(card, suggestion) {
+  const rx = card.querySelector('[data-role="rx"]').value;
+  const msg = card.querySelector('[data-role="msg"]');
+  msg.className = "status";
+  msg.textContent = "Saving…";
+  try {
+    let r;
+    if (suggestion.kind === "extend_builtin") {
+      r = await fetch("/builtin_patterns", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: suggestion.id, regex: rx }),
+      });
+    } else {
+      r = await fetch("/patterns", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: suggestion.label, regex: rx }),
+      });
+    }
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      msg.className = "status err";
+      msg.textContent = d.error || d.detail || "Rejected.";
+      return;
+    }
+    msg.textContent = "Saved — active on the next mask.";
+    loadedViews.rules = false;      // the rules view must re-read the library
+  } catch (e) {
+    msg.className = "status err";
+    msg.textContent = "Could not reach the local server.";
+  }
+}
+
+(function wireWorkbench() {
+  const btn = $("wbDiagnoseBtn");
+  if (!btn) return;
+  btn.addEventListener("click", wbDiagnose);
+  $("wbValue").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); wbDiagnose(); }
+  });
+})();

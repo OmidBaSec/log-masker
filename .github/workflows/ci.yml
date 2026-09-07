@@ -43,6 +43,7 @@ jobs:
           python test_credits.py
           python test_security.py
           python test_cli.py
+          python test_regexlab.py
 
       - name: Frontend decoding tests
         run: node test_frontend.js

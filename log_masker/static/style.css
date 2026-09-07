@@ -1187,3 +1187,52 @@ details.settings-section[open] .settings-trigger::after { transform: rotate(180d
   background-color: var(--overlay-2); border: 1px solid var(--border-color);
   white-space: nowrap;
 }
+
+/* --- Regex workbench ---------------------------------------------------- */
+/* The verdict is the part people act on, so it carries the colour: green
+   means nothing to fix, amber means the fix is somewhere other than a regex,
+   blue means edit a pattern. */
+.wb-verdict {
+  border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: 10px; padding: 12px 14px; margin: 14px 0 4px;
+  background: var(--panel-2); font-size: 13px; line-height: 1.5;
+}
+.wb-verdict .wb-title { font-weight: 600; margin-bottom: 4px; display: block; }
+.wb-verdict.ok       { border-left-color: var(--green); }
+.wb-verdict.elsewhere{ border-left-color: var(--amber); }
+.wb-verdict.fixable  { border-left-color: var(--accent); }
+.wb-verdict code { font-family: var(--mono); font-size: 12px; }
+
+.wb-hit {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; margin-top: 10px; font-size: 12px;
+}
+.wb-hit .wb-id { font-family: var(--mono); color: var(--accent); }
+.wb-hit .wb-reason { color: var(--amber); display: block; margin-top: 4px; }
+
+.wb-card {
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--panel-2); padding: 14px;
+}
+.wb-card.recommended { border-color: var(--accent); }
+.wb-card .wb-kind {
+  display: inline-block; font-size: 11px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+}
+.wb-card .wb-kind .wb-pill {
+  background: var(--accent); color: #0d1117; border-radius: 999px;
+  padding: 2px 8px; margin-left: 6px; font-weight: 600;
+}
+.wb-card textarea {
+  width: 100%; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  resize: vertical; min-height: 74px;
+}
+.wb-card textarea:focus { outline: none; border-color: var(--accent); }
+.wb-card .wb-why { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.wb-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.wb-result { font-size: 12px; margin-top: 10px; }
+.wb-result .wb-match { font-family: var(--mono); }
+.wb-result .wb-drop { color: var(--amber); }
+.wb-side { color: var(--amber); font-size: 12px; margin-top: 8px; display: block; }

@@ -337,6 +337,41 @@ log you paste from then on — no need to add them again. If the regex contains 
 capture group, only the group is masked (`key=(value)` style); otherwise the
 whole match is.
 
+### Regex workbench — "why was this not masked?"
+
+**🔬 Regex Workbench** in the sidebar. Paste the line a value slipped through
+in, name the value, and press **Diagnose**. Everything runs on this machine:
+the whole reason it exists is that a log too sensitive to hand an AI provider
+is also too sensitive to paste into an online regex tester.
+
+It answers the question in two halves. First, **why** the value survived —
+there are four different reasons and they have four different fixes:
+
+| Verdict | What it means | Where the fix is |
+|---|---|---|
+| No pattern matches this | nothing in the library sees these characters | a regex change |
+| Matched, then dropped | a pattern found it and an accept rule threw it out — it names the rule, e.g. *"`.pdf` is on the not-a-TLD list"* | usually an allow-list, not a regex |
+| Deliberately kept | a protected span claimed it (a file hash, a vendor id) | nothing — see [what is deliberately not masked](#what-is-deliberately-not-masked) |
+| Claimed by a higher-priority pattern | something else masked those characters first | the competing pattern |
+| Already masked | the current patterns handle it | nothing |
+
+Then, for the cases a regex *does* fix, it proposes the change — preferring to
+**widen the built-in that should have caught it** over adding a new pattern,
+because one more field name in an existing list is a change a reviewer can
+read. An indented `Requesting Workstation:` line is offered as an addition to
+the Windows Event Log pattern, not to the generic `host=` one, and a
+`-TargetBox` argument goes to the PowerShell parameter pattern.
+
+Every proposal is **verified before it is offered**: applied at that pattern's
+real priority, the value is gone from the sample. Proposals that only work
+because they were tried at the top of the list are dropped, as are ones that
+match somewhere other than where the value actually sits. Each card shows what
+else it would newly mask in the sample, so an over-broad edit is visible before
+it is saved. **Test** runs a candidate and lists every value it would mask —
+including any the accept rules would then drop, and why. **Save** writes it
+through the same validation as a hand-typed regex, into
+`builtin_overrides.json` or the saved-patterns store.
+
 ### Editing the built-in regexes (per log source & field)
 
 Open **⚙ Setup → 🧩 Edit masking regexes**. Every built-in pattern is listed,
@@ -748,6 +783,7 @@ python test_providers.py   # provider abstraction + usage capture
 python test_credits.py     # pricing and spend accounting
 python test_security.py    # request guard, data paths, secret storage
 python test_cli.py         # launcher: start/stop/status on this OS
+python test_regexlab.py    # regex workbench: diagnosis and suggestions
 node   test_frontend.js    # log-file encoding detection (browser-side)
 ```
 
