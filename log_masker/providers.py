@@ -48,9 +48,10 @@ PROVIDERS: Dict[str, dict] = {
     },
     "openai": {
         "label": "ChatGPT (OpenAI)",
-        "models": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4",
+        "models": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra",
+                   "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro",
                    "gpt-5.4-mini", "gpt-5.4-nano"],
-        "default_model": "gpt-5.5",
+        "default_model": "gpt-6-astra",
         "key_label": "OpenAI API key",
         "key_url": "https://platform.openai.com/api-keys",
         "billing_url": "https://platform.openai.com/settings/organization/billing/overview",

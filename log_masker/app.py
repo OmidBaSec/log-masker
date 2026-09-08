@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "provider": "anthropic",
     "provider_models": {
         "anthropic": "claude-opus-5",
-        "openai": "gpt-5.5",
+        "openai": "gpt-6-astra",
         "google": "gemini-3.8-flash",
         "azure": "",
         "m365copilot": "",
