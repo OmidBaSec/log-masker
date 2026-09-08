@@ -1842,6 +1842,21 @@ async function loadVault() {
     $("vaultEnabledChk").checked = d.enabled && d.available;
     $("vaultEnabledChk").disabled = !d.available;
     $("vaultFile").textContent = (d.file || "entity_vault.enc").split("/").pop();
+    // Say where the key really is, rather than naming one platform's store:
+    // this runs on macOS, Windows, desktop Linux, a headless server and in a
+    // container, and only the first three have a credential store at all.
+    const where = {
+      "keyring": "(key in your OS credential store)",
+      "encrypted file": "(key in a protected file beside it)",
+      "encrypted file (master key from environment)":
+        "(key from LOGMASKER_MASTER_KEY)",
+    }[d.key_backend] || "(key held outside the file)";
+    $("vaultKeyWhere").textContent = where;
+    $("vaultKeyWhere").title = d.key_backend
+      ? `Key store in use: ${d.key_backend}. On macOS that is the Keychain, on `
+        + `Windows the Credential Manager, on desktop Linux the Secret `
+        + `Service; without one, a Fernet key file with owner-only permissions.`
+      : "";
     const active = d.enabled && d.available;
     syncVaultCtxToggle(active, d.available ? "The entity vault is switched off." : d.reason);
     if (!d.available) vaultMsg(d.reason, "err");

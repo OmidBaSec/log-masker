@@ -90,6 +90,13 @@ versions follow [Semantic Versioning][semver].
   class of value is.
 
 ### Fixed
+- The Entity Vault and Settings pages claimed the encryption key and the API
+  keys live in "your OS keychain". That names one platform's store for an
+  application that also runs on Windows, on desktop Linux, on a headless
+  server and in a container — and on the last two there is no keychain at
+  all, so the Settings page's "never in the browser or any file" was simply
+  untrue. The vault page now reports the store actually in use on this
+  machine, and the Settings page and README describe all of them.
 - A user name could be masked **in part**, sending the rest in clear:
   `ParentUser: ACME\a.karimi` came out as `[USER_3]karimi` whenever a later
   line began with `=`, because the "this is a key, not a value" guard scanned

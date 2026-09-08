@@ -140,8 +140,10 @@ gets a 10-minute request timeout — big models on CPU are slow.
 > Prefer the largest model your hardware can run (e.g. `llama3.1:70b` >
 > `llama3.1:8b`) for anything beyond a quick triage.
 
-API keys are stored in your **OS keychain** (via `keyring`), never in the
-browser or in any file. Non-secret settings (default provider, per-provider
+API keys are held by the server, never by the browser: your **OS credential
+store** where the platform has one (macOS Keychain, Windows Credential
+Manager, Linux Secret Service), and otherwise an encrypted file only your
+account can read — see [Where your data lives](#where-your-data-lives). Non-secret settings (default provider, per-provider
 default model, Azure endpoint) live in a local `app_config.json` (git-ignored).
 **Test connection** in Setup sends a one-word ping to verify the key/model work.
 
@@ -811,8 +813,9 @@ By default, placeholders are stable across your **entire history**, not just
 one conversation: once `WS-FIN-07` becomes `[HOST_12]`, it is `[HOST_12]` in
 every future incident. The vault stores each entity (placeholder, real value,
 first/last seen) together with the incidents it appeared in and the structured
-verdict the AI reached — encrypted in `entity_vault.enc` with a key held in
-your **OS keychain** (git-ignored; real values never leave the machine).
+verdict the AI reached — encrypted in `entity_vault.enc` with a key held
+outside it, in the same store as the API keys (git-ignored; real values never
+leave the machine).
 
 That unlocks cross-incident correlation without exposing data:
 

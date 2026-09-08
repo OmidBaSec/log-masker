@@ -646,7 +646,11 @@ def vault_overview():
     out = {"enabled": bool(cfg.get("vault_enabled", True)),
            "available": avail, "reason": reason,
            "warning": vault.status_warning() if avail else "",
-           "file": vault.VAULT_FILE}
+           "file": vault.VAULT_FILE,
+           # Where the key actually lives on THIS machine. The UI used to say
+           # "your OS keychain", which is wrong on a headless Linux box or in
+           # a container -- exactly where a shared deployment runs.
+           "key_backend": keystore.backend()}
     if avail:
         out["stats"] = vault.stats()
         out["entities"] = vault.entities()

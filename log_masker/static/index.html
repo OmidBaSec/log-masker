@@ -379,7 +379,7 @@
           Placeholders are stable across <strong>all</strong> analyses: once a value becomes <code>[HOST_12]</code> it stays
           <code>[HOST_12]</code> in every future incident, so recurring hosts, users, and IPs can be correlated across cases —
           and that history can be attached to prompts as <strong>placeholder statistics only</strong>. Real values are stored
-          encrypted in <code id="vaultFile">entity_vault.enc</code> (key in your OS keychain) and never leave this machine.
+          encrypted in <code id="vaultFile">entity_vault.enc</code> <span id="vaultKeyWhere">(key held outside the file)</span> and never leave this machine.
         </p>
         <p id="vaultMsg" class="status"></p>
 
@@ -448,7 +448,7 @@
     <div class="drawer-body">
       <!-- TAB: API / CONNECTION -->
       <div class="drawer-pane active" id="stab-connection">
-        <p class="hint" style="margin-bottom: 16px;">API keys are stored in your OS keychain via <code>keyring</code> — never in the browser or any file. Only <strong>masked</strong> logs are ever sent.</p>
+        <p class="hint" style="margin-bottom: 16px;">API keys are held by the server, never by the browser: your OS credential store where the platform has one (macOS Keychain, Windows Credential Manager, Linux Secret Service), otherwise an encrypted file only your account can read. Only <strong>masked</strong> logs are ever sent.</p>
 
         <label class="field-label" style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">AI engine configuration</label>
         <div id="providerCards" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;"></div>
