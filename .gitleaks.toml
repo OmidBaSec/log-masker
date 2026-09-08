@@ -1,0 +1,30 @@
+# gitleaks configuration.
+#
+# This repository is a log masker, so its tests are full of things that are
+# *shaped* like secrets on purpose -- that is what they exist to prove gets
+# masked. The generic-api-key rule cannot tell those apart from the real
+# thing, so the fake literals are allow-listed here, by value.
+#
+# Why not .gitleaksignore: a fingerprint there pins a commit SHA and a line
+# number, and both change whenever history is rewritten or the file above the
+# line is edited. That is exactly how these suppressions went stale. Matching
+# the literal instead survives both.
+#
+# Each entry must be a value that appears in a test and cannot be a credential
+# anywhere. Never allow-list a path or a whole rule: a real key committed to
+# test_masker.py has to keep failing this scan.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberately fake credentials used as masking test fixtures"
+regexes = [
+  # The round-trip test's fake API key: masked, then restored, then asserted on.
+  '''sk-abc123def456ghi789jkl''',
+  # A synthetic Azure Key Vault *name* (not a secret) from the Azure CLI test.
+  '''kv-prod-eastus-01''',
+  # The fake service-principal secret of the "az login -p" test, named so that
+  # it reads as fake wherever it surfaces.
+  '''this-is-not-a-real-secret''',
+]
