@@ -15,4 +15,4 @@
 
 # The fake service-principal secret of the "az login -p" test, same story:
 # renamed in the following commit, but still readable in this one.
-57178f72208b619a9eff578fec559d72bcf759b1:test_masker.py:generic-api-key:1664
+5c8867f1e18aaa617f7a0027e18846e15a46292b:test_masker.py:generic-api-key:1664
