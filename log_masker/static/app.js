@@ -1337,50 +1337,104 @@ function renderBuiltinRow(p) {
   return row;
 }
 
-async function loadBuiltinPatterns() {
+// The library as the server last sent it. Kept so the search box can filter
+// without a round trip -- and so a filtered view never loses a pattern that
+// simply is not on screen right now.
+let BUILTIN_PATTERNS = [];
+
+function renderBuiltinGroups() {
   const wrap = $("builtinGroups");
-  // Remember which groups are expanded across reloads.
+  const q = $("builtinSearch").value.trim().toLowerCase();
+  // Remember which groups are expanded, so re-rendering does not collapse
+  // what the analyst opened.
   const openSources = new Set(
     [...wrap.querySelectorAll("details[open]")].map((d) => d.dataset.source)
   );
+  wrap.innerHTML = "";
+
+  const groups = new Map();             // source -> patterns, engine order
+  for (const p of BUILTIN_PATTERNS) {
+    if (!groups.has(p.source)) groups.set(p.source, []);
+    groups.get(p.source).push(p);
+  }
+  // Groups are listed A-Z so a source is easy to find; the patterns inside a
+  // group keep engine order, which is the order they claim spans in.
+  const sorted = [...groups].sort((a, b) =>
+    a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: "base" })
+  );
+
+  let shownGroups = 0, shownPatterns = 0;
+  for (const [source, pats] of sorted) {
+    // A hit on the log source shows the whole group; a hit inside a pattern
+    // shows just the patterns that matched, and opens the group so the hit is
+    // visible without a second click.
+    const sourceHit = !q || source.toLowerCase().includes(q);
+    const hits = sourceHit
+      ? pats
+      : pats.filter((p) =>
+          (p.id + " " + (p.note || "") + " " + p.label + " " + p.regex)
+            .toLowerCase().includes(q));
+    if (!hits.length) continue;
+    shownGroups++;
+    shownPatterns += hits.length;
+
+    const det = document.createElement("details");
+    det.className = "pat-group";
+    det.dataset.source = source;
+    // While searching, a group matched only by its patterns opens itself.
+    det.open = openSources.has(source) || (!!q && !sourceHit);
+    const sum = document.createElement("summary");
+    sum.textContent = source;
+    const count = document.createElement("span");
+    count.className = "hint";
+    const n = hits.length;
+    count.textContent = q && n !== pats.length
+      ? ` (${n} of ${pats.length} patterns)`
+      : ` (${n} pattern${n > 1 ? "s" : ""})`;
+    sum.appendChild(count);
+    if (hits.some((p) => p.modified)) {
+      const badge = document.createElement("span");
+      badge.className = "pat-modified";
+      badge.textContent = "modified";
+      sum.appendChild(badge);
+    }
+    det.appendChild(sum);
+    for (const p of hits) det.appendChild(renderBuiltinRow(p));
+    wrap.appendChild(det);
+  }
+
+  const countEl = $("builtinCount");
+  if (!q) {
+    countEl.textContent = `${sorted.length} log sources · ${BUILTIN_PATTERNS.length} patterns`;
+  } else if (shownGroups) {
+    countEl.textContent =
+      `${shownGroups} of ${sorted.length} log sources · ${shownPatterns} patterns`;
+  } else {
+    countEl.textContent = "no match";
+    wrap.innerHTML =
+      `<p class="hint">Nothing matches “${escapeHtml(q)}”. The search covers the ` +
+      `log source, the pattern name and note, and the regex itself.</p>`;
+  }
+}
+
+async function loadBuiltinPatterns() {
+  const wrap = $("builtinGroups");
   try {
     const d = await (await fetch("/builtin_patterns")).json();
-    wrap.innerHTML = "";
-    const groups = new Map();           // source -> patterns, engine order
-    for (const p of d.patterns) {
-      if (!groups.has(p.source)) groups.set(p.source, []);
-      groups.get(p.source).push(p);
-    }
-    // Groups are listed A-Z so a source is easy to find; the patterns inside a
-    // group keep engine order, which is the order they claim spans in.
-    const sorted = [...groups].sort((a, b) =>
-      a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: "base" })
-    );
-    for (const [source, pats] of sorted) {
-      const det = document.createElement("details");
-      det.className = "pat-group";
-      det.dataset.source = source;
-      if (openSources.has(source)) det.open = true;
-      const sum = document.createElement("summary");
-      sum.textContent = source;
-      const count = document.createElement("span");
-      count.className = "hint";
-      count.textContent = ` (${pats.length} pattern${pats.length > 1 ? "s" : ""})`;
-      sum.appendChild(count);
-      if (pats.some((p) => p.modified)) {
-        const badge = document.createElement("span");
-        badge.className = "pat-modified";
-        badge.textContent = "modified";
-        sum.appendChild(badge);
-      }
-      det.appendChild(sum);
-      for (const p of pats) det.appendChild(renderBuiltinRow(p));
-      wrap.appendChild(det);
-    }
+    BUILTIN_PATTERNS = d.patterns;
+    renderBuiltinGroups();
   } catch {
     wrap.innerHTML = `<p class="hint">Could not load patterns.</p>`;
   }
 }
+
+$("builtinSearch").addEventListener("input", renderBuiltinGroups);
+$("builtinSearch").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.target.value = "";
+    renderBuiltinGroups();
+  }
+});
 
 // Shortcut from the Settings drawer → jump to the Masking Rules viewport.
 $("openPatternsBtn").addEventListener("click", () => {

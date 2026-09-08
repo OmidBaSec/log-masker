@@ -332,6 +332,14 @@
           </div>
           <p class="hint" style="margin-bottom: 12px;">Regexes grouped by log source. Override a pattern or reset it to default. Stored locally in <code>builtin_overrides.json</code>.</p>
           <p id="builtinMsg" class="status"></p>
+
+          <div class="audit-filter">
+            <input type="text" id="builtinSearch" class="dropdown" style="flex: 1;"
+              placeholder="Search log source, pattern name, or regex… e.g. sysmon, okta, QueryName"
+              autocomplete="off" />
+            <span id="builtinCount" class="hint"></span>
+          </div>
+
           <div id="builtinGroups" style="overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;"></div>
         </div>
       </div>
