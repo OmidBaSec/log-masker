@@ -45,3 +45,6 @@ token.pickle
 
 # Tooling
 .claude/
+
+# Internal planning — kept on this machine, never published
+docs/ROADMAP.md
