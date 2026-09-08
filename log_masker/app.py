@@ -78,9 +78,9 @@ CONFIG_FILE = paths.data_file("app_config.json")
 DEFAULT_CONFIG = {
     "provider": "anthropic",
     "provider_models": {
-        "anthropic": "claude-opus-4-8",
+        "anthropic": "claude-opus-5",
         "openai": "gpt-5.5",
-        "google": "gemini-3.5-flash",
+        "google": "gemini-3.8-flash",
         "azure": "",
         "m365copilot": "",
         "ollama": "",

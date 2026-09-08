@@ -81,9 +81,9 @@ Choose one in **⚙ Setup** (provider + model + API key):
 
 | Provider | API | Notes |
 |----------|-----|-------|
-| **Claude (Anthropic)** | api.anthropic.com | API key. Opus 4.8 / Sonnet 4.6 / Haiku 4.5 |
+| **Claude (Anthropic)** | api.anthropic.com | API key. Opus 5 / Sonnet 5 / Fable 5.1 / Haiku 4.5 |
 | **ChatGPT (OpenAI)** | api.openai.com | API key. gpt-5.5, gpt-5.5-pro, gpt-5.4(-mini/-nano) |
-| **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-3.5-flash, 3.1-pro, 3.1-flash-lite, 2.5-pro |
+| **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-3.8-flash, 3.7-flash, 3.5-flash-lite, 3.1-pro, 2.5-pro |
 | **Microsoft 365 Copilot** | Microsoft Graph (`/beta/copilot`) | **OAuth sign-in** + Copilot license + Entra app (see below) |
 | **Microsoft Copilot (Azure OpenAI)** | your Azure resource | API key + endpoint + deployment + api-version |
 | **Local model (Ollama)** | `http://127.0.0.1:11434` (configurable) | **No key, fully local** — for logs that must not reach any cloud, even masked |
@@ -753,7 +753,7 @@ and model. It covers everything billed under that conversation id: the opening
 with a final figure in the closing message:
 
 > 💵 This conversation cost **$0.0057** — 3 call(s), 6.2K tokens on
-> gemini-3.5-flash.
+> gemini-3.8-flash.
 
 Connection tests aren't part of any conversation, so they never land on one.
 `/analyze`, `/chat` and `/chat/end` each return the total in a `cost` field if

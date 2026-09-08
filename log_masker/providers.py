@@ -30,11 +30,17 @@ OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 # Provider registry. `extra_fields` are non-secret settings the setup page must
 # collect (e.g. Azure endpoint). `key_label` describes the API key to enter.
 # ---------------------------------------------------------------------------
+# The "models" list is what the Setup dropdown offers before it has talked to
+# the provider -- a current, opinionated subset, not the catalogue. Setup
+# replaces it with the live list from list_models() as soon as there is a
+# working key, so a model released after this file was last edited is still
+# selectable. Keep the newest tier here and let the rest come from the API.
 PROVIDERS: Dict[str, dict] = {
     "anthropic": {
         "label": "Claude (Anthropic)",
-        "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
-        "default_model": "claude-opus-4-8",
+        "models": ["claude-opus-5", "claude-sonnet-5", "claude-fable-5-1",
+                   "claude-haiku-4-5-20251001"],
+        "default_model": "claude-opus-5",
         "key_label": "Anthropic API key",
         "key_url": "https://console.anthropic.com/settings/keys",
         "billing_url": "https://console.anthropic.com/settings/billing",
@@ -52,9 +58,10 @@ PROVIDERS: Dict[str, dict] = {
     },
     "google": {
         "label": "Gemini (Google)",
-        "models": ["gemini-3.5-flash", "gemini-3.1-pro-preview",
-                   "gemini-3.1-flash-lite", "gemini-2.5-pro"],
-        "default_model": "gemini-3.5-flash",
+        "models": ["gemini-3.8-flash", "gemini-3.7-flash",
+                   "gemini-3.5-flash-lite", "gemini-3.1-pro-preview",
+                   "gemini-2.5-pro"],
+        "default_model": "gemini-3.8-flash",
         "key_label": "Google AI Studio API key",
         "key_url": "https://aistudio.google.com/app/apikey",
         "billing_url": "https://aistudio.google.com/app/plan_information",
