@@ -1346,12 +1346,17 @@ async function loadBuiltinPatterns() {
   try {
     const d = await (await fetch("/builtin_patterns")).json();
     wrap.innerHTML = "";
-    const groups = new Map();           // source -> patterns, first-seen order
+    const groups = new Map();           // source -> patterns, engine order
     for (const p of d.patterns) {
       if (!groups.has(p.source)) groups.set(p.source, []);
       groups.get(p.source).push(p);
     }
-    for (const [source, pats] of groups) {
+    // Groups are listed A-Z so a source is easy to find; the patterns inside a
+    // group keep engine order, which is the order they claim spans in.
+    const sorted = [...groups].sort((a, b) =>
+      a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: "base" })
+    );
+    for (const [source, pats] of sorted) {
       const det = document.createElement("details");
       det.className = "pat-group";
       det.dataset.source = source;
