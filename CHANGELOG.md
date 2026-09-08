@@ -211,6 +211,14 @@ versions follow [Semantic Versioning][semver].
   are long and high-entropy and appear in every PowerShell paste.
 
 ### Changed
+- **`Windows XML & Sysmon` is now `Windows Event Log (XML)`**, and holds only
+  the Security-channel fields it is named for. Sysmon's own XML fields moved
+  to the Sysmon group: `User` and `ParentUser` were in both groups, and
+  `SourceHostname` / `DestinationHostname` were only in the Windows one, so
+  "which rule masked this?" had two answers and "where do I edit it?" had the
+  wrong one. Nothing changed about what gets masked -- the split is verified
+  field by field -- and pattern ids are untouched, so a saved override still
+  applies to the same regex.
 - **Far fewer false positives on EDR alert JSON.** A Microsoft Defender
   incident went from 25 masked values to 14, with every remaining one genuinely
   customer-identifying. Masking a vendor's schema namespaces, console URLs and

@@ -301,6 +301,9 @@ def _compile_patterns():
     p.append(("network", "HOST", re.compile(
         r"(?im)^[ \t]*QueryName[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$")))
     p.append(("network", "HOST", re.compile(
+        r"(?i)<Data Name=[\"'](?:Source|Destination)Hostname[\"']>"
+        r"([^<]+)</Data>")))
+    p.append(("network", "HOST", re.compile(
         r"(?i)<Data Name=[\"']QueryName[\"']>([^<]+)</Data>")))
     p.append(("network", "HOST", re.compile(
         r"(?i)\"(?:(?:Source|Destination)Hostname|QueryName)\"\s*:\s*"
@@ -371,11 +374,14 @@ def _compile_patterns():
     p.append(("identities", "DN", re.compile(
         r"(?im)\b(?:CN|OU|DC)=[^,;\r\n]+?(?:\s*,\s*(?:CN|OU|DC)=[^,;\r\n]+?)+"
         r"(?=[\s,;\"')\]]|$)")))
-    # Windows XML event exports (Security XML view, Sysmon via WEF/Winlogbeat):
+    # Windows Security-channel XML exports (the Event Viewer "XML View", and
+    # the same events forwarded by WEF or a shipper):
     #   <Data Name='TargetUserName'>jsmith</Data>
+    # Sysmon's own fields (User, ParentUser, SourceHostname...) are NOT here:
+    # they live in the Sysmon group, which reads them in all three encodings.
     p.append(("identities", "USER", re.compile(
-        r"(?i)<Data Name=[\"'](?:TargetUserName|SubjectUserName|User"
-        r"|AccountName|SamAccountName|LogonAccount|ParentUser)[\"']>"
+        r"(?i)<Data Name=[\"'](?:TargetUserName|SubjectUserName"
+        r"|AccountName|SamAccountName|LogonAccount)[\"']>"
         r"([^<]+)</Data>")))
     p.append(("identities", "DOMAIN", re.compile(
         r"(?i)<Data Name=[\"'](?:TargetDomainName|SubjectDomainName"
@@ -515,11 +521,11 @@ def _compile_patterns():
         r"(?im)^[ \t]*(?:Workstation(?: Name)?|Source Workstation"
         r"|Caller Computer Name|Target Server Name|Computer)"
         r"[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$")))
-    # Windows XML event exports / Sysmon XML: hostname-bearing <Data> fields
-    # and the <Computer> element of the System section.
+    # Windows Security-channel XML: the workstation fields of a logon event,
+    # and the <Computer> element every Windows XML event carries in <System>.
     p.append(("network", "HOST", re.compile(
-        r"(?i)<Data Name=[\"'](?:SourceHostname|DestinationHostname"
-        r"|Workstation(?:Name)?|MachineName)[\"']>([^<]+)</Data>")))
+        r"(?i)<Data Name=[\"'](?:Workstation(?:Name)?|MachineName)[\"']>"
+        r"([^<]+)</Data>")))
     p.append(("network", "HOST", re.compile(
         r"(?i)<Computer>([^<]+)</Computer>")))
     # Syslog header hostname: the token after the classic timestamp, e.g.
@@ -797,6 +803,8 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
      "SourceHostname / DestinationHostname of a network connection (event 3)"),
     ("sysmon-dns-query", "Sysmon (Windows & Linux)",
      "QueryName of a DNS query (event 22)"),
+    ("sysmon-hostname-xml", "Sysmon (Windows & Linux)",
+     "SourceHostname / DestinationHostname in forwarded XML"),
     ("sysmon-dns-query-xml", "Sysmon (Windows & Linux)",
      "QueryName in forwarded XML"),
     ("sysmon-host-json", "Sysmon (Windows & Linux)",
@@ -819,9 +827,9 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
      "Meeting topics and operation details (email subjects are kept)"),
     ("ad-dn", "Active Directory",
      "Distinguished names (CN=…,OU=…,DC=…) as one token"),
-    ("winxml-user", "Windows XML & Sysmon",
-     "<Data Name='TargetUserName'>… and similar user-bearing fields"),
-    ("winxml-domain", "Windows XML & Sysmon",
+    ("winxml-user", "Windows Event Log (XML)",
+     "<Data Name='TargetUserName'>… and the other Security-channel user fields"),
+    ("winxml-domain", "Windows Event Log (XML)",
      "<Data Name='TargetDomainName'>… domain fields"),
     ("winevent-user", "Windows Event Log",
      "Indented 'Account Name:' / 'Logon Account:' lines (4624/4625…)"),
@@ -870,9 +878,10 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
     ("ipv4", "Generic network", "IPv4 addresses"),
     ("winevent-host", "Windows Event Log",
      "Indented 'Workstation Name:' / 'Caller Computer Name:' lines"),
-    ("winxml-host", "Windows XML & Sysmon",
-     "<Data Name='SourceHostname'>… and similar host fields"),
-    ("winxml-computer", "Windows XML & Sysmon", "<Computer>…</Computer>"),
+    ("winxml-host", "Windows Event Log (XML)",
+     "<Data Name='WorkstationName'>… workstation fields of a logon event"),
+    ("winxml-computer", "Windows Event Log (XML)",
+     "<Computer>…</Computer>, the host every Windows XML event names"),
     ("syslog-bsd-host", "Syslog header (BSD)",
      "Hostname after 'Jun 10 14:23:01' style timestamps"),
     ("cli-host-param", "CLI parameters (PowerShell…)",

@@ -366,12 +366,68 @@ def test_windows_path_is_not_an_account():
 
 
 def test_sysmon_group_is_in_the_library():
-    sources = {p["source"] for p in masker.get_builtin_patterns()}
+    pats = masker.get_builtin_patterns()
+    sources = {p["source"] for p in pats}
     check("sysmon group listed", "Sysmon (Windows & Linux)" in sources)
-    ids = {p["id"] for p in masker.get_builtin_patterns()
-           if p["source"] == "Sysmon (Windows & Linux)"}
-    check("sysmon group has its patterns", len(ids) == 7)
+    ids = {p["id"] for p in pats if p["source"] == "Sysmon (Windows & Linux)"}
+    check("sysmon group has its patterns", len(ids) == 8)
     check("sysmon ids are stable", "sysmon-user" in ids)
+
+
+def test_sysmon_fields_live_in_one_group_only():
+    """Sysmon's own fields belong to the Sysmon group. Leaving copies in the
+    Windows-XML group meant two places to edit and two places to look, with
+    no way to tell which one had matched."""
+    pats = {p["id"]: p for p in masker.get_builtin_patterns()}
+    win = [p for p in pats.values() if p["source"] == "Windows Event Log (XML)"]
+    check("windows XML group no longer claims Sysmon",
+          len(win) == 4 and all("Sysmon" not in p["source"] for p in win))
+    import re as _re
+    win_re = " ".join(p["regex"] for p in win)
+    for field in ("ParentUser", "SourceHostname", "DestinationHostname"):
+        check(f"{field} is not in the Windows XML group",
+              field not in win_re)
+    # ...and the Sysmon group is where they went. Checked by matching, not by
+    # looking for the field name in the regex text: the patterns spell it as
+    # an alternation ("(?:Parent|Source|Target)?User"), so a substring search
+    # would quietly pass for fields that are not covered at all.
+    sysmon = [_re.compile(p["regex"]) for p in pats.values()
+              if p["source"] == "Sysmon (Windows & Linux)"]
+    probes = {
+        "ParentUser": "<Data Name='ParentUser'>ACME\\jsmith</Data>",
+        "SourceUser": "<Data Name='SourceUser'>ACME\\jsmith</Data>",
+        "TargetUser": "TargetUser: ACME\\jsmith\n",
+        "SourceHostname": "<Data Name='SourceHostname'>WS-07</Data>",
+        "DestinationHostname": "DestinationHostname: WS-07\n",
+        "QueryName": "<Data Name='QueryName'>dc01</Data>",
+    }
+    for field, probe in probes.items():
+        check(f"{field} is matched by the Sysmon group",
+              any(rx.search(probe) for rx in sysmon))
+    # The Security-channel fields stay where they were: they are not Sysmon's.
+    win_rx = [_re.compile(p["regex"]) for p in win]
+    for field in ("TargetUserName", "SubjectUserName", "WorkstationName",
+                  "MachineName"):
+        probe = f"<Data Name='{field}'>value-07</Data>"
+        check(f"{field} stays in the Windows XML group",
+              any(rx.search(probe) for rx in win_rx))
+
+
+def test_windows_xml_and_sysmon_both_still_mask():
+    """The split moved fields between groups; it must not have dropped any."""
+    raw = (
+        "<Data Name='User'>ACME\\a.karimi</Data>"
+        "<Data Name='ParentUser'>ACME\\a.karimi</Data>"
+        "<Data Name='SourceHostname'>WS-FIN-114</Data>"
+        "<Data Name='DestinationHostname'>mail.acme.lan</Data>"
+        "<Data Name='TargetUserName'>j.doe</Data>"
+        "<Data Name='WorkstationName'>WS-042</Data>"
+        "<Computer>dc01.acme.lan</Computer>"
+    )
+    masked, _ = masker.mask(raw, ALL)
+    for value in ("a.karimi", "WS-FIN-114", "mail.acme.lan", "j.doe",
+                  "WS-042", "dc01.acme.lan"):
+        check(f"{value} still masked after the split", value not in masked)
 
 
 def test_qradar_logs():
@@ -1999,6 +2055,8 @@ if __name__ == "__main__":
     test_sysmon_patterns_earn_their_place()
     test_windows_path_is_not_an_account()
     test_sysmon_group_is_in_the_library()
+    test_sysmon_fields_live_in_one_group_only()
+    test_windows_xml_and_sysmon_both_still_mask()
     test_qradar_logs()
     test_linux_os_logs()
     test_cloud_json_logs()
