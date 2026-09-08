@@ -9,6 +9,16 @@ versions follow [Semantic Versioning][semver].
 ## [Unreleased]
 
 ### Added
+- **Sysmon (Windows & Linux) pattern group**, editable as a unit in the
+  built-in regex library. Sysmon emits the same field names in three shapes —
+  the Event Viewer `Field: value` render, forwarded XML (`<Data Name='…'>`)
+  and shipper JSON — and the group reads `User` / `ParentUser` / `SourceUser`
+  / `TargetUser`, `SourceHostname` / `DestinationHostname` (event 3) and
+  `QueryName` (event 22) in all three. Each field is taken as a whole value at
+  Sysmon priority, which catches what the generic `key=value` rules cannot: a
+  non-ASCII personal name (their value class is ASCII-only) and a single-label
+  DNS query, which has no dot for the FQDN pattern to find.
+- The built-in regex library lists its log-source groups alphabetically.
 - **Regex workbench**, in the Workspace under the masked output: select a
   value that got through and get the regex change that fixes it, entirely
   on this machine. It sits where the problem is noticed — the value and
@@ -80,6 +90,27 @@ versions follow [Semantic Versioning][semver].
   class of value is.
 
 ### Fixed
+- A user name could be masked **in part**, sending the rest in clear:
+  `ParentUser: ACME\a.karimi` came out as `[USER_3]karimi` whenever a later
+  line began with `=`, because the "this is a key, not a value" guard scanned
+  past the end of the line. It now stops at the line it is on.
+- A space inside a Windows path let `DOMAIN\user` start half way through one,
+  so `C:\Program Files\Acme Suite\agent.exe` was shredded into
+  `C:\Program [USER_1] [USER_2]`. A directory word on the left of the
+  backslash, or a file name on the right, now says "this is a path".
+- The `net use … /user:DOM\svc <password>` rule ran past the end of the
+  password in forwarded XML, masking `Sup3rSecret!</Data><Data` as one secret
+  and breaking the document it was in.
+- Values that describe the log format rather than the customer are no longer
+  masked: the `xmlns` schema URL, the provider GUID of the Sysmon channel,
+  WMI namespaces and consumer classes (`root\cimv2`,
+  `CommandLineEventConsumer.Name`) from events 19-21, and well-known short
+  SIDs under a key (`UserID='S-1-5-18'`), which the SID pattern already left
+  readable on purpose.
+- Linux daemon accounts (`postfix`, `www-data`, `syslog`, `nobody`, …) are
+  treated like the built-in Windows accounts they are the equivalent of. They
+  identify nobody, and masking `postfix` also shredded the binary path it
+  appeared in (`/usr/lib/[USER_5]/sbin/smtp`).
 - **`/etc/cron.hourly` was masked as a hostname.** It is dotted like a domain
   and `.hourly` is on no file-extension list, so every cron line came back
   with a stock Linux path redacted out of it. Same for systemd unit names

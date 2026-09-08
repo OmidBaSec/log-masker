@@ -194,11 +194,22 @@ just paste and the preview updates automatically:
 - **Network devices** (Cisco ASA/IOS, FortiGate, generic syslog) — the syslog
   header hostname, `user 'x'`, `user="x"`, `devname="x"`, `srcip=`/`dstip=`,
   SNMP community strings.
-- **Sysmon** (text and XML) — `User: DOMAIN\user`, `ParentUser:`, usernames in
-  profile paths (`C:\Users\j.doe\…`, `/home/j.doe/…` — only the name is masked,
-  the path stays readable), `<Data Name='TargetUserName'>`, `<Computer>`,
-  hashes. System paths (`C:\Windows\System32\…`) and built-in accounts
-  (`NT AUTHORITY\SYSTEM`) are left intact for the AI.
+- **Sysmon, Windows and Linux** (Event Viewer render, forwarded XML, and
+  shipper JSON) — `User:`, `ParentUser:`, `SourceUser:`/`TargetUser:` are read
+  as whole values, so a name with a space or an umlaut is one placeholder
+  rather than a truncated one; `SourceHostname:`/`DestinationHostname:` of a
+  network connection (event 3) and `QueryName:` of a DNS query (event 22),
+  including single-label names no FQDN pattern can see; usernames in profile
+  paths (`C:\Users\j.doe\…`, `/home/j.doe/…` — only the name is masked, the
+  path stays readable).
+  What Sysmon logs are *made of* stays readable, because it names Microsoft
+  and not the customer: the `xmlns` schema URL and the Sysmon provider GUID,
+  WMI namespaces and consumer classes (`root\cimv2`,
+  `CommandLineEventConsumer`) from events 19-21, well-known short SIDs
+  (`S-1-5-18`), file hashes, system paths (`C:\Windows\System32\…`,
+  `C:\Program Files\Vendor\…`) and built-in accounts — Windows
+  (`NT AUTHORITY\SYSTEM`) and Linux daemon accounts (`postfix`, `www-data`,
+  `syslog`) alike.
 - **QRadar** — LEEF events (`usrName=`, `src=`/`dst=`, `identHostName=`),
   offense API exports (`"offense_source":`, `"assigned_to":`), and event-viewer
   copies (`Username:`, `Source IP:`, `Log Source:` hostnames). The same value

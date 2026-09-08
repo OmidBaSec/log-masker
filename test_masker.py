@@ -227,6 +227,153 @@ def test_sysmon_xml():
     check("xml structure kept", "<Data Name='TargetUserName'>" in masked)
 
 
+def test_sysmon_group():
+    """The Sysmon (Windows & Linux) group: whole-value user and host fields,
+    and the runtime scaffolding around them that must stay readable."""
+    raw = (
+        "Process Create:\n"
+        "RuleName: technique_id=T1059,technique_name=Command and Scripting\n"
+        "Image: C:\\Program Files\\Acme Suite\\acmeagent.exe\n"
+        "User: ACMECORP\\a.karimi\n"
+        "ParentUser: ACMECORP\\a.karimi\n"
+        "\n"
+        "=== next block ===\n"
+        "Dns query:\n"
+        "QueryName: dc01.acmecorp.lan\n"
+        "SourceHostname: WS-FIN-114\n"
+        "DestinationHostname: mail.acmecorp.lan\n"
+        "SourceUser: ACMECORP\\m.olsen\n"
+        "TargetUser: NT AUTHORITY\\SYSTEM\n"
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    # The whole account, not a prefix of it. A "===" separator on the next
+    # line used to make the generic user pattern stop at "ACMECORP\a." and
+    # send the surname in clear.
+    check("sysmon user masked whole", "karimi" not in masked)
+    check("sysmon user is one placeholder",
+          "ACMECORP\\a.karimi" in mapping.values())
+    check("sysmon parent user reuses the alias", masked.count(
+        [k for k, v in mapping.items() if v == "ACMECORP\\a.karimi"][0]) == 2)
+    check("sysmon source user masked", "m.olsen" not in masked)
+    check("sysmon builtin target user kept", "NT AUTHORITY\\SYSTEM" in masked)
+    check("sysmon dns query masked", "dc01.acmecorp.lan" not in masked)
+    check("sysmon source hostname masked", "WS-FIN-114" not in masked)
+    check("sysmon destination hostname masked",
+          "mail.acmecorp.lan" not in masked)
+    # The vendor directory names the software. The space in "Program Files"
+    # is what let DOMAIN\user read "Files\Acme" as an account.
+    check("program files path kept",
+          "C:\\Program Files\\Acme Suite\\acmeagent.exe" in masked)
+    check("attack technique name kept", "Command and Scripting" in masked)
+    check("sysmon field labels kept", "QueryName:" in masked)
+
+
+def test_sysmon_xml_scaffolding():
+    """Forwarded Sysmon XML: the channel's own constants are not customer
+    data, and the user/host fields are read from <Data Name=...>."""
+    raw = (
+        "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+        "<System><Provider Name='Microsoft-Windows-Sysmon' "
+        "Guid='{5770385f-c22a-43e0-bf4c-06f5698ffbd9}'/>"
+        "<Computer>WS-FIN-114.acmecorp.lan</Computer>"
+        "<Security UserID='S-1-5-18'/></System><EventData>"
+        "<Data Name='CommandLine'>net use \\\\FS-01\\pay$ "
+        "/user:ACMECORP\\adm_backup Sup3rSecret!</Data>"
+        "<Data Name='SourceUser'>ACMECORP\\m.olsen</Data>"
+        "<Data Name='TargetUser'>NT AUTHORITY\\SYSTEM</Data>"
+        "<Data Name='QueryName'>vpn.acmecorp.com</Data>"
+        "<Data Name='Device'>\\Device\\HarddiskVolume2</Data>"
+        "</EventData></Event>"
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("xml namespace kept", "schemas.microsoft.com" in masked)
+    check("sysmon provider guid kept",
+          "5770385f-c22a-43e0-bf4c-06f5698ffbd9" in masked)
+    check("well-known short SID kept", "UserID='S-1-5-18'" in masked)
+    check("device path kept", "\\Device\\HarddiskVolume2" in masked)
+    check("xml source user masked", "m.olsen" not in masked)
+    check("xml query name masked", "vpn.acmecorp.com" not in masked)
+    # The password must not swallow the tag that follows it: the XML has to
+    # survive masking, and the mapping must hold the password alone.
+    check("net use password masked", "Sup3rSecret!" not in masked)
+    check("password did not eat the markup",
+          "Sup3rSecret!" in mapping.values())
+    check("xml still well formed", masked.count("</Data>") == 5)
+
+
+def test_sysmon_linux():
+    """Sysmon for Linux: same schema, unix logins and paths."""
+    raw = (
+        "Jun 10 14:32:44 srv-app-07 sysmon: Network connection detected:\n"
+        "Image: /usr/lib/postfix/sbin/smtp\n"
+        "User: postfix\n"
+        "ParentUser: o.banaei\n"
+        "SourceHostname: srv-app-07.acmecorp.lan\n"
+        "TargetFilename: /home/o.banaei/.config/acme/token.json\n"
+        "EventNamespace: \"root\\\\cimv2\"\n"
+        "Consumer: \"CommandLineEventConsumer.Name=x\"\n"
+    )
+    masked, mapping = masker.mask(raw, ALL)
+    check("linux sysmon user masked", "o.banaei" not in masked)
+    check("linux home path structure kept", "/home/[USER_" in masked)
+    check("linux sysmon hostname masked",
+          "srv-app-07.acmecorp.lan" not in masked)
+    # A daemon account ships with the distribution and identifies nobody --
+    # masking it also shredded the binary path it appears in.
+    check("daemon account kept", "User: postfix" in masked)
+    check("daemon path kept", "/usr/lib/postfix/sbin/smtp" in masked)
+    check("wmi namespace kept", "root\\\\cimv2" in masked)
+    check("wmi consumer class kept", "CommandLineEventConsumer.Name" in masked)
+
+
+def test_sysmon_patterns_earn_their_place():
+    """Each Sysmon pattern is pinned by a value the generic key=value rules
+    cannot reach: a non-ASCII personal name (their value class is ASCII-only)
+    and a single-label DNS query (no dot, so the FQDN pattern cannot see it).
+    Without these the group would be untested scenery."""
+    raw = (
+        "User: ACMECORP\\J\u00f6rg M\u00fcller\n"
+        "QueryName: internal-dc01\n"
+        "<Data Name='TargetUser'>ACME\\J\u00f6rg M\u00fcller</Data>\n"
+        "<Data Name='QueryName'>internal-dc02</Data>\n"
+        '"SourceUser": "ACME\\\\J\u00f6rg M\u00fcller"\n'
+        '"QueryName": "internal-dc03"\n'
+    )
+    masked, _ = masker.mask(raw, ALL)
+    check("non-ascii name masked (render)", "J\u00f6rg M\u00fcller" not in masked)
+    check("single-label dns query masked (render)",
+          "internal-dc01" not in masked)
+    check("single-label dns query masked (xml)", "internal-dc02" not in masked)
+    check("single-label dns query masked (json)", "internal-dc03" not in masked)
+
+
+def test_windows_path_is_not_an_account():
+    """A space inside a Windows path let DOMAIN\\user start half way through
+    it. Two independent vetoes cover the two halves: a directory word on the
+    left, a file name on the right."""
+    raw = (
+        "Image: C:\\Program Files\\Acme Suite\\acmeagent.exe\n"
+        "ParentImage: C:\\Users\\a.karimi\\My Documents\\Acme Tools\\run.exe\n"
+    )
+    masked, _ = masker.mask(raw, ALL)
+    check("directory word on the left is not a domain",
+          "Program Files\\Acme" in masked)
+    check("file name on the right is not an account",
+          "Suite\\acmeagent.exe" in masked)
+    check("spaced profile path kept but the profile name masked",
+          "My Documents\\Acme Tools\\run.exe" in masked
+          and "a.karimi" not in masked)
+
+
+def test_sysmon_group_is_in_the_library():
+    sources = {p["source"] for p in masker.get_builtin_patterns()}
+    check("sysmon group listed", "Sysmon (Windows & Linux)" in sources)
+    ids = {p["id"] for p in masker.get_builtin_patterns()
+           if p["source"] == "Sysmon (Windows & Linux)"}
+    check("sysmon group has its patterns", len(ids) == 7)
+    check("sysmon ids are stable", "sysmon-user" in ids)
+
+
 def test_qradar_logs():
     raw = (
         "LEEF:2.0|IBM|QRadar|2.0|AuthFail|usrName=j.doe\tsrc=10.20.30.40\t"
@@ -1846,6 +1993,12 @@ if __name__ == "__main__":
     test_network_device_logs()
     test_sysmon_logs()
     test_sysmon_xml()
+    test_sysmon_group()
+    test_sysmon_xml_scaffolding()
+    test_sysmon_linux()
+    test_sysmon_patterns_earn_their_place()
+    test_windows_path_is_not_an_account()
+    test_sysmon_group_is_in_the_library()
     test_qradar_logs()
     test_linux_os_logs()
     test_cloud_json_logs()

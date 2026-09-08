@@ -91,7 +91,37 @@ _WINDOWS_BUILTIN_VALUES = {
     "enterprise admins", "schema admins", "authenticated users", "everyone",
     "administrators", "remote desktop users", "backup operators",
     "account operators", "server operators", "print operators", "power users",
+    # Unix / Linux daemon accounts. Sysmon for Linux reports these as the User
+    # of half the process and network events on a normal host; they ship with
+    # the distribution and identify nobody. "root" is already listed above.
+    "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news",
+    "uucp", "proxy", "www-data", "backup", "list", "irc", "gnats", "nobody",
+    "nogroup", "systemd-network", "systemd-resolve", "systemd-timesync",
+    "messagebus", "syslog", "sshd", "postfix", "chrony", "ntp", "dbus",
+    "polkitd", "rpc", "rpcuser", "nfsnobody", "apache", "nginx", "mysql",
+    "postgres", "redis", "tss", "sssd", "colord", "avahi", "cups", "tcpdump",
+    "usbmux", "_apt", "snapd", "kernoops", "landscape", "pollinate", "sshd_t",
 }
+
+# Directory names that turn up on the left or right of a backslash inside a
+# Windows path. A space in a path ("C:\Program Files\Acme Suite\agent.exe") is
+# what lets the DOMAIN\user pattern start half way through one and read
+# "Files\Acme" as an account: the lookbehind only rejects the first position.
+_PATH_WORDS = {
+    "files", "documents", "desktop", "downloads", "pictures", "videos",
+    "music", "favorites", "appdata", "local", "locallow", "roaming", "temp",
+    "tmp", "windows", "winnt", "system32", "syswow64", "programdata",
+    "program", "inetpub", "wwwroot", "drivers", "config", "microsoft",
+    "common", "shared", "bin", "lib", "usr", "var", "etc", "opt", "srv",
+}
+
+_SHORT_SID = re.compile(r"(?i)S-1-\d+(?:-\d+){0,3}")
+
+# A file name on the right of the backslash says the same thing.
+_PATH_FILE_EXT = re.compile(
+    r"(?i)\.(?:exe|dll|sys|drv|ocx|cpl|scr|com|msi|msu|cab|inf|ini|config"
+    r"|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|bat|cmd|sh|py|jar"
+    r"|log|txt|xml|json|csv|dat|db|tmp|zip|7z|rar|lnk)$")
 
 # Well-known SaaS applications and cloud services. When a SaaS audit log names
 # the application an action happened in ("appName":"Box"), that names the
@@ -213,7 +243,7 @@ def _compile_patterns():
         r"|token|secret|clientsecret|sharedkey|passphrase)[ \t]+"
         r"[\"']?([^\s\"',;]+)")))
     p.append(("secrets", "SECRET", re.compile(
-        r"(?i)/user:\S+[ \t]+([^\s\"',;]+)")))
+        r"(?i)/user:\S+[ \t]+([^\s\"',;<]+)")))
     # "-p" names the service-principal secret in this one command and a port
     # in plenty of others, so it is read here and nowhere else.
     p.append(("secrets", "SECRET", re.compile(
@@ -242,6 +272,39 @@ def _compile_patterns():
     # Emails (before domains).
     p.append(("identities", "EMAIL", re.compile(
         r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")))
+    # --- Sysmon (Windows & Linux) -----------------------------------------
+    # Sysmon and Sysmon for Linux emit the same field names in three shapes:
+    # the Event Viewer "Field: value" render, forwarded XML (<Data Name='…'>)
+    # and JSON from a shipper. They are read here, ahead of every generic
+    # key=value pattern, so the WHOLE value is claimed as one placeholder --
+    # left to the generic user pattern, "ParentUser: ACME\a.karimi" can match
+    # only as far as "ACME\a." and the rest of the name is sent in clear.
+    #
+    # Windows reports User as DOMAIN\account, Linux as a bare login name; both
+    # are one value here. SourceUser / TargetUser are the two sides of a
+    # ProcessAccess (event 10) and of Linux events 11 and 23.
+    p.append(("identities", "USER", re.compile(
+        r"(?im)^[ \t]*(?:Parent|Source|Target|Original)?User"
+        r"[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$")))
+    p.append(("identities", "USER", re.compile(
+        r"(?i)<Data Name=[\"'](?:Parent|Source|Target|Original)?User[\"']>"
+        r"([^<]+)</Data>")))
+    p.append(("identities", "USER", re.compile(
+        r"(?i)\"(?:Parent|Source|Target|Original)User\"\s*:\s*\"([^\"]+)\"")))
+    # Machine names either side of a network connection (event 3) and the name
+    # asked for in a DNS query (event 22). QueryName is masked like any other
+    # hostname: an internal name ("dc01.acme.lan") is exactly what must not
+    # leave, and the FQDN pattern already treats external ones the same way.
+    p.append(("network", "HOST", re.compile(
+        r"(?im)^[ \t]*(?:Source|Destination)Hostname"
+        r"[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$")))
+    p.append(("network", "HOST", re.compile(
+        r"(?im)^[ \t]*QueryName[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$")))
+    p.append(("network", "HOST", re.compile(
+        r"(?i)<Data Name=[\"']QueryName[\"']>([^<]+)</Data>")))
+    p.append(("network", "HOST", re.compile(
+        r"(?i)\"(?:(?:Source|Destination)Hostname|QueryName)\"\s*:\s*"
+        r"\"([^\"]+)\"")))
     # --- SaaS / cloud audit logs ------------------------------------------
     # These formats are JSON, with the identity under a vendor-specific key
     # and often a multi-word value ("John Smith", "Acme Payroll App") that
@@ -345,7 +408,7 @@ def _compile_patterns():
     p.append(("identities", "USER", re.compile(
         r"(?i)(?:user(?:[ _-]?name|[ _-]?id)?|usr[_-]?name|usr|login"
         r"|account(?:[ _-]?name)?|uid|identity|target|sAMAccountName)"
-        r"[\"']?\s*[=:]\s*[\"']?([A-Za-z0-9._\\@\-]{2,})\b(?!\s*=)")))
+        r"[\"']?\s*[=:]\s*[\"']?([A-Za-z0-9._\\@\-]{2,})\b(?![ \t]*=)")))
     # Domain key=value pairs (M365 Defender "AccountDomain":"acme",
     # Symantec EP "Domain name: ACME", etc.).
     p.append(("identities", "DOMAIN", re.compile(
@@ -652,6 +715,22 @@ _KEEP_PATTERNS = [
     # left outside the protected span.
     re.compile(r"\b(?:Microsoft|System)\.[A-Za-z0-9_.]+"
                r"(?:\\[A-Za-z0-9_]+)?(?=::)"),
+    # --- Sysmon scaffolding (Windows and Linux) ---
+    # The XML namespace and the provider GUID of the channel itself. Both are
+    # published constants that name Microsoft's schema and the Sysmon driver,
+    # the same for every installation on earth, and the GUID would otherwise
+    # be masked as a UUID and the namespace URL as a hostname.
+    re.compile(r"(?i)\bxmlns(?::\w+)?=[\"']([^\"'\r\n]+)[\"']"),
+    re.compile(r"(?i)<Provider\b[^>]{0,200}?Guid=[\"']\{?"
+               r"([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\}?"),
+    # WMI object model (events 19-21): "root\cimv2" is a namespace and
+    # "CommandLineEventConsumer.Name" a class, not a domain and a host.
+    re.compile(r"(?i)\broot\\{1,4}(?:cimv2|subscription|default|wmi|rsop"
+               r"|policy|directory|standardcimv2)"
+               r"(?:\\{1,4}[A-Za-z0-9_]+)*"),
+    re.compile(r"(?i)\b(?:__[A-Za-z]\w+"
+               r"|(?:CommandLine|ActiveScript|LogFile|NTEventLog|SMTP)"
+               r"EventConsumer)(?:\.[A-Za-z]\w*)?"),
 ]
 
 
@@ -707,6 +786,21 @@ _PATTERN_META: List[Tuple[str, str, str]] = [
     ("hex-blob", "Generic secrets", "Long hex blobs (hashes, 32+ chars)"),
     # --- identities ---
     ("email", "Generic", "Email addresses"),
+    # --- Sysmon ---
+    ("sysmon-user", "Sysmon (Windows & Linux)",
+     "User / ParentUser / SourceUser / TargetUser lines, whole value"),
+    ("sysmon-user-xml", "Sysmon (Windows & Linux)",
+     "The same user fields in forwarded XML (<Data Name='ParentUser'>)"),
+    ("sysmon-user-json", "Sysmon (Windows & Linux)",
+     "The same user fields in shipper JSON (\"ParentUser\": \"…\")"),
+    ("sysmon-hostname", "Sysmon (Windows & Linux)",
+     "SourceHostname / DestinationHostname of a network connection (event 3)"),
+    ("sysmon-dns-query", "Sysmon (Windows & Linux)",
+     "QueryName of a DNS query (event 22)"),
+    ("sysmon-dns-query-xml", "Sysmon (Windows & Linux)",
+     "QueryName in forwarded XML"),
+    ("sysmon-host-json", "Sysmon (Windows & Linux)",
+     "Hostname and DNS query fields in shipper JSON"),
     ("saas-actor-kv", "SaaS audit logs (GitHub, Jira, Zoom, OneLogin)",
      "\"actor\" / \"authorKey\" / \"operator\" / \"createdBy\" values"),
     ("saas-actor-object", "Duo Security, JumpCloud, Zoom",
@@ -1594,6 +1688,11 @@ def _accept(label: str, value: str) -> bool:
         return False
     if label in ("USER", "DOMAIN", "HOST") and v[0] == "\\":
         return False
+    # A short well-known SID (S-1-5-18 SYSTEM, S-1-5-19/20 the local services)
+    # names a built-in account. The SID pattern deliberately leaves those
+    # readable -- a "UserID='S-1-5-18'" key=value match must not undo it.
+    if label in ("USER", "DOMAIN", "HOST") and _SHORT_SID.fullmatch(v):
+        return False
     # NT AUTHORITY\SYSTEM, NT SERVICE\TrustedInstaller, BUILTIN\Administrators…
     if label == "USER" and "\\" in v:
         prefix, account = v.lower().split("\\", 1)
@@ -1601,6 +1700,13 @@ def _accept(label: str, value: str) -> bool:
             return False
         # "CORP\Domain Admins" names a built-in group, not a person.
         if account.strip("\\") in _WINDOWS_BUILTIN_VALUES:
+            return False
+        # Two halves of one Windows path rather than DOMAIN\account: Sysmon
+        # Image / CommandLine fields are full of them, and a space inside the
+        # path is what let the match start in the middle of it.
+        if prefix.rsplit(" ", 1)[-1] in _PATH_WORDS \
+                or account.split("\\", 1)[0] in _PATH_WORDS \
+                or _PATH_FILE_EXT.search(account):
             return False
     # Numeric values (uid=1000, domainInfo=0) identify nothing on their own.
     if label in ("USER", "DOMAIN") and v.isdigit():

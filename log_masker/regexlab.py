@@ -205,6 +205,9 @@ def _why_rejected(label: str, value: str) -> str:
         return "it is shorter than three characters, so it names nothing"
     if label in ("USER", "DOMAIN", "HOST") and v[:1] == "\\":
         return "it starts with a backslash, so it is a regex escape or a path"
+    if label in ("USER", "DOMAIN", "HOST") and masker._SHORT_SID.fullmatch(v):
+        return (f"'{v}' is a short well-known SID, which the masker keeps "
+                "readable on purpose")
     if label == "USER" and "\\" in v:
         prefix, account = v.lower().split("\\", 1)
         if prefix in masker._BUILTIN_DOMAIN_PREFIXES:
@@ -213,6 +216,11 @@ def _why_rejected(label: str, value: str) -> str:
             return f"'{prefix}' is on the domain allow-list"
         if account.strip("\\") in masker._WINDOWS_BUILTIN_VALUES:
             return f"'{account}' is a built-in group, not a person"
+        if prefix.rsplit(" ", 1)[-1] in masker._PATH_WORDS \
+                or account.split("\\", 1)[0] in masker._PATH_WORDS \
+                or masker._PATH_FILE_EXT.search(account):
+            return ("it is two halves of one Windows file path, not "
+                    "DOMAIN\\account")
     if label in ("USER", "DOMAIN") and v.isdigit():
         return "it is all digits, which identifies nobody on its own"
     if label == "HOST":
