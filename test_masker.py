@@ -1887,12 +1887,12 @@ def test_generic_domain_word_is_not_chased_through_prose():
 def test_windows_event_message_blob():
     """A forwarded Windows event puts the whole Message on one line, fields
     separated by two spaces. Three separate patterns misread that shape."""
-    raw = ("<13>Sep 07 12:03:59 SV-APP-016.acme.lan AgentDevice=WindowsLog\t"
-           "PluginVersion=WC.MSEVEN6.10.0.2.62\tComputer=SV-APP-016.acme.lan\t"
+    raw = ("<13>Sep 07 12:03:59 WIN-APP-01.acme.lan AgentDevice=WindowsLog\t"
+           "PluginVersion=WC.MSEVEN6.10.0.2.62\tComputer=WIN-APP-01.acme.lan\t"
            "OriginatingComputer=10.4.2.180\tUser=\tDomain=\tEventID=4799\t"
            "Message=A security-enabled local group membership was enumerated."
            "  Subject:  Security ID:  NT AUTHORITY\\SYSTEM  Account Name:  "
-           "SV-APP-016$  Account Domain:  ACME  Logon ID:  0x3E7  Group:  "
+           "WIN-APP-01$  Account Domain:  ACME  Logon ID:  0x3E7  Group:  "
            "Security ID:  BUILTIN\\Administrators  Group Name:  Administrators"
            "  Group Domain:  Builtin  Process Information:  Process ID:  0x740"
            "  Process Name:  C:\\Windows\\System32\\svchost.exe\n")
@@ -1918,7 +1918,7 @@ def test_windows_event_message_blob():
     check("a real address is still masked", "10.4.2.180" not in masked)
 
     # What should go, still goes.
-    check("the host is masked", "SV-APP-016.acme.lan" not in masked)
+    check("the host is masked", "WIN-APP-01.acme.lan" not in masked)
     check("the account domain is masked", "Account Domain:  ACME" not in masked)
     # And what is excluded on purpose is still excluded.
     check("built-in accounts stay readable",
@@ -1929,7 +1929,7 @@ def test_path_components_are_not_hostnames():
     """"/etc/cron.hourly" is a directory. It is dotted like a domain and the
     last label is not on any file-extension list, so the FQDN pattern read it
     as a host and redacted a stock Linux path out of every cron line."""
-    raw = ("<77>Sep  7 12:01:01 SV-LNUX-009 run-parts[1234567]: "
+    raw = ("<77>Sep  7 12:01:01 LNX-CRON-01 run-parts[1234567]: "
            "(/etc/cron.hourly) starting 0anacron\n"
            "systemd[1]: session-42.scope: Succeeded.\n"
            "/var/log/nginx/access.log.1 rotated, /etc/apt/sources.list.d read\n"
@@ -1938,7 +1938,7 @@ def test_path_components_are_not_hostnames():
     for path in ("/etc/cron.hourly", "session-42.scope", "access.log.1",
                  "sources.list.d", "nginx.service"):
         check(f"path component kept: {path}", path in masked)
-    check("the host on the line is still masked", "SV-LNUX-009" not in masked)
+    check("the host on the line is still masked", "LNX-CRON-01" not in masked)
 
     # Suffixes that are on no list at all -- neither a known file extension nor
     # a domain suffix. Nothing but the path lookbehind keeps these readable,

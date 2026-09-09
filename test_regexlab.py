@@ -176,10 +176,10 @@ def test_sample_and_value_must_line_up():
 
 # A forwarded Windows event: one line, fields two spaces apart, and the value
 # the analyst wants is one the masker excludes on purpose.
-WINEVENT = ("<13>Sep 07 12:03:59 SV-APP-016.acme.lan\tUser=\tDomain=\t"
+WINEVENT = ("<13>Sep 07 12:03:59 WIN-APP-01.acme.lan\tUser=\tDomain=\t"
             "EventID=4799\tMessage=A group membership was enumerated."
             "  Subject:  Security ID:  NT AUTHORITY\\SYSTEM  Account Name:  "
-            "SV-APP-016$  Account Domain:  ACME  Logon ID:  0x3E7  Group:  "
+            "WIN-APP-01$  Account Domain:  ACME  Logon ID:  0x3E7  Group:  "
             "Security ID:  BUILTIN\\Administrators  Group Name:  "
             "Administrators  Process Name:  C:\\Windows\\System32\\svchost.exe\n")
 
