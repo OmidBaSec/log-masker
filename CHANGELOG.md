@@ -9,6 +9,13 @@ versions follow [Semantic Versioning][semver].
 ## [Unreleased]
 
 ### Added
+- **Screenshots in the README**, so the workflow can be understood before
+  cloning anything: the workspace (raw log beside the masked text and the
+  alias table), an analysis with its structured verdict card, the audit trail
+  with an entry expanded to show exactly what was sent and received, the entity
+  vault, and the built-in regex library. The workspace shot follows the
+  reader's colour scheme. Every value in them is fabricated or from
+  `sample_logs/` — reserved ranges and example accounts only.
 - **Sysmon (Windows & Linux) pattern group**, editable as a unit in the
   built-in regex library. Sysmon emits the same field names in three shapes —
   the Event Viewer `Field: value` render, forwarded XML (`<Data Name='…'>`)
