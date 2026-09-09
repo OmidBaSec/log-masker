@@ -193,10 +193,61 @@ function testDecode() {
     check("UTF-32 is refused with a message, not mojibake", !!r.error);
 }
 
+// --- HTML escaping (app.js) ------------------------------------------------
+// Masked/restored values come straight from the pasted logs, so they are
+// attacker-controlled, and renderMasked drops them into double-quoted HTML
+// attributes. escapeHtml is the one thing standing between a crafted log field
+// and script execution in this origin (which holds the vault and the API keys),
+// so its quote handling is pinned here rather than left to manual testing.
+function readSource(path) {
+    if (typeof require !== "undefined") {
+        return require("fs").readFileSync(path, "utf-8");
+    }
+    return readFile(path);   // JavaScriptCore
+}
+
+function testEscaping() {
+    var src = readSource("./log_masker/static/app.js");
+    // Pull the two pure, DOM-free functions out of app.js and eval only those
+    // (evaluating the whole file would touch document/$ at load time).
+    function extract(name) {
+        var start = src.indexOf("function " + name + "(");
+        if (start === -1) { throw new Error("could not find " + name); }
+        // These are top-level declarations, so the body ends at the first "}"
+        // that sits alone at the start of a line — no brace-counting through
+        // the regexes and template literals in between.
+        var end = src.indexOf("\n}", start);
+        if (end === -1) { throw new Error("unterminated " + name); }
+        return src.slice(start, end + 2);
+    }
+    eval(extract("escapeHtml"));       // eslint-disable-line no-eval
+    eval(extract("renderMasked"));     // eslint-disable-line no-eval
+
+    check("escapeHtml neutralizes <, >, &",
+          escapeHtml("<b>&</b>") === "&lt;b&gt;&amp;&lt;/b&gt;");
+    check("escapeHtml escapes the double quote that breaks out of an attribute",
+          escapeHtml('a"b').indexOf('"') === -1);
+    check("escapeHtml escapes the single quote too",
+          escapeHtml("a'b").indexOf("'") === -1);
+
+    // The real attack: a masked value carrying a quote + event handler must not
+    // introduce a live on* attribute when rendered.
+    var evil = { "[USER_1]": 'ACME\\a" onmouseover="steal()' };
+    var html = renderMasked("User: [USER_1]", evil);
+    // A live handler needs a real quote to open it (onmouseover="…). The value
+    // survives as inert text (onmouseover=&quot;…) because the quote is escaped,
+    // so the giveaway is an unescaped  ="  right after the handler name.
+    check("renderMasked does not emit a live onmouseover attribute",
+          !/onmouseover="/.test(html));
+    check("renderMasked keeps the injected quote escaped inside the attribute",
+          html.indexOf('="steal()') === -1 && html.indexOf("&quot;") !== -1);
+}
+
 testDetection();
 testBinaryAndNonAscii();
 testNormalize();
 testDecode();
+testEscaping();
 
 if (failures) {
     print("\n" + failures + " frontend check(s) FAILED.");
