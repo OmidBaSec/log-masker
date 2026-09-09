@@ -28,6 +28,15 @@ masked text stays on your hardware.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/workspace-dark.png">
+  <img src="docs/images/workspace-light.png"
+       alt="The workspace: a raw Windows logon CSV on the left, the masked text that would be sent on the right, and a table mapping each placeholder to the real value that stayed local.">
+</picture>
+
+<sup>Raw log in, masked text out — and the alias table showing which real value
+stayed on the machine. Nothing has been sent at this point.</sup>
+
 ## Try it in 30 seconds — no API key needed
 
 ```bash
@@ -442,6 +451,18 @@ future paste and survives restarts (stored locally in
 **↺ default**. A regex that doesn't compile is rejected on save; if an
 override ever becomes invalid on disk, the default is used instead.
 
+![The built-in regex library, listing 64 log sources and 96 patterns grouped by
+source — Active Directory, Apache & nginx, AWS CloudTrail, Azure & Entra ID and
+more.](docs/images/regex-library.png)
+
+Search narrows the list to one source and shows every pattern it contributes,
+each editable in place:
+
+![The library filtered to "sysmon", showing the eight Sysmon patterns for User,
+ParentUser, SourceUser, TargetUser, SourceHostname, DestinationHostname and
+QueryName across plain-text, forwarded-XML and shipper-JSON
+formats.](docs/images/regex-library-search.png)
+
 > Masking is regex-based and best-effort. Read the *Masked data* tab to
 > review exactly what will be sent before you send it.
 
@@ -711,6 +732,10 @@ no customer data ever left the machine — e.g.:
 grep -i "acme" ai_requests.jsonl
 ```
 
+![The audit trail with one entry expanded, showing the exact masked text that
+was sent and the masked response that came back — every identifier is a
+placeholder.](docs/images/audit-trail.png)
+
 The file is append-only: **Clear view** only empties the on-screen list, and
 the most recent entries are re-loaded from the file on server restart.
 
@@ -811,6 +836,14 @@ into a SOAR incident or case record. Follow-up questions update the card if the
 assessment changes. The parsing is on the *masked* response and tolerant of
 malformed output — a missing or broken block just falls back to plain prose.
 
+![An analysis of the sample SSH brute-force log: a TRUE POSITIVE / CRITICAL
+verdict card with MITRE ATT&CK techniques, IOCs and affected entities, with the
+real values restored locally, and a follow-up box below
+it.](docs/images/analysis-conversation.png)
+
+<sup>The answer above reads in real values — but only placeholders were ever
+sent. Restoration happens locally, after the response comes back.</sup>
+
 ### Persistent entity vault (cross-incident correlation)
 
 By default, placeholders are stable across your **entire history**, not just
@@ -837,6 +870,10 @@ That unlocks cross-incident correlation without exposing data:
   entity. **🗑 Clear vault** wipes everything and restarts numbering.
 - **Vault enabled** toggle (persisted) switches the feature off entirely:
   numbering restarts per conversation and nothing new is remembered.
+
+![The entity vault: ten entities with their alias, type, real value, how many
+incidents each appeared in, and first/last seen dates — the ×2 badges mark
+values that recurred across separate incidents.](docs/images/entity-vault.png)
 
 ### Conversations & masking
 
