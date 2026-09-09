@@ -19,7 +19,18 @@ function setStatus(msg, kind = "") {
 // Escapes HTML first, then highlights placeholders and applies light markdown
 // (headings, bold, code, bullets). Keeps things readable without a heavy dep.
 function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Escapes for BOTH text and attribute contexts. Masked/restored values come
+  // straight from the pasted logs — attacker-controlled — and are dropped into
+  // double-quoted attributes (data-keep, data-tip, title, data-real). Leaving
+  // the quotes intact lets a value like  hostname" onmouseover="…  break out of
+  // its attribute and run script in this origin, which holds the entity vault
+  // and the provider API keys. So " and ' must be escaped here too, not only <>.
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 function renderMarkdown(text) {
   let html = escapeHtml(text);
