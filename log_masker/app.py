@@ -131,8 +131,15 @@ if _BIND_PROBLEM:
 async def request_guard(request: Request, call_next):
     problem = guard.check(request.method, request.headers)
     if problem:
-        return JSONResponse({"detail": problem}, status_code=403)
-    return await call_next(request)
+        response = JSONResponse({"detail": problem}, status_code=403)
+    else:
+        response = await call_next(request)
+    # On every response, including the 403 above and the files served by the
+    # static mount. A header that covers only some routes is one route away
+    # from being no protection at all -- and the route an attacker frames is
+    # "/", which is a FileResponse, not a JSON endpoint.
+    guard.apply_security_headers(response.headers)
+    return response
 
 
 # ---------------------------------------------------------------------------

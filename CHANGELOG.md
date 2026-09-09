@@ -265,6 +265,29 @@ versions follow [Semantic Versioning][semver].
 - The M365 token cache is created owner-only rather than chmod-ed afterwards,
   closing the window where a refresh token sat at 0644.
 
+### Security
+- **Clickjacking is refused: every response now carries `frame-ancestors
+  'none'` and `X-Frame-Options: DENY`.** The provenance checks in `guard.py`
+  stop a cross-origin page from *acting* on this app, but nothing stopped one
+  from *framing* it: an `<iframe>` of `http://127.0.0.1:8888/` sends exactly
+  the loopback `Host` the guard expects, and a GET is only Host-checked. Once
+  framed, the page's own requests are same-origin, so every remaining check
+  passes while the analyst clicks an overlay they cannot see — on buttons that
+  clear the entity vault and spend API credit. Only the browser can decline
+  the frame, and only when the response tells it to.
+- `X-Content-Type-Options: nosniff`, so nothing served from the static mount
+  can be re-interpreted as script on this origin, and `Referrer-Policy:
+  no-referrer`, so a local URL is never handed to another site.
+- The headers are set on **every** response, including the guard's own 403 and
+  the files from the static mount — the framed route is `/`, which is a
+  `FileResponse`, not a JSON endpoint.
+- No `script-src` is claimed. `index.html` sets the theme from an inline
+  `<script>` before first paint and the markup carries inline `style`
+  attributes, so a `script-src` today would need `'unsafe-inline'` — a policy
+  that advertises a protection it does not provide. Adding a real one is a
+  frontend change (a nonce, or moving that bootstrap into a file), tracked
+  separately.
+
 ## [0.9.0] — 2026-08-25
 
 First release prepared for public use. Everything before this was developed in
