@@ -79,14 +79,18 @@ excellent bug report and usually becomes a new test case.
 
 Choose one in **⚙ Setup** (provider + model + API key):
 
-| Provider | API | Notes |
-|----------|-----|-------|
-| **Claude (Anthropic)** | api.anthropic.com | API key. Opus 5 / Sonnet 5 / Fable 5.1 / Haiku 4.5 |
-| **ChatGPT (OpenAI)** | api.openai.com | API key. gpt-6-astra, gpt-5.6(-sol/-terra/-luna), gpt-5.5(-pro), gpt-5.4(-mini/-nano) |
-| **Gemini (Google)** | generativelanguage.googleapis.com | API key. gemini-3.8-flash, 3.7-flash, 3.5-flash-lite, 3.1-pro, 2.5-pro |
-| **Microsoft 365 Copilot** | Microsoft Graph (`/beta/copilot`) | **OAuth sign-in** + Copilot license + Entra app (see below) |
-| **Microsoft Copilot (Azure OpenAI)** | your Azure resource | API key + endpoint + deployment + api-version |
-| **Local model (Ollama)** | `http://127.0.0.1:11434` (configurable) | **No key, fully local** — for logs that must not reach any cloud, even masked |
+| Provider | Notes |
+|----------|-------|
+| **Claude (Anthropic)** | API key required |
+| **ChatGPT (OpenAI)** | API key required |
+| **Gemini (Google)** | API key required |
+| **Microsoft 365 Copilot** | **OAuth sign-in** required — plus a Copilot license and an Entra app registration (see below) |
+| **Microsoft Copilot (Azure OpenAI)** | API key required, plus endpoint, deployment name and api-version |
+| **Local model (Ollama)** | **No key, fully local** — for logs that must not reach any cloud, even masked |
+
+Setup fetches the model list live from the provider (Anthropic, OpenAI, Google
+and Ollama), so it stays current on its own. Azure OpenAI uses your own
+deployment name instead, and Microsoft 365 Copilot offers no model choice.
 
 ### Microsoft 365 Copilot (OAuth)
 
