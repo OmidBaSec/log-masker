@@ -34,8 +34,18 @@ masked text stays on your hardware.
        alt="The workspace: a raw Windows logon CSV on the left, the masked text that would be sent on the right, and a table mapping each placeholder to the real value that stayed local.">
 </picture>
 
-<sup>Raw log in, masked text out — and the alias table showing which real value
-stayed on the machine. Nothing has been sent at this point.</sup>
+<sup>**1 · Mask.** Raw log in, masked text out — and the alias table showing
+which real value stayed on the machine. Nothing has been sent at this
+point.</sup>
+
+![An analysis of the sample SSH brute-force log: a TRUE POSITIVE / CRITICAL
+verdict card with MITRE ATT&CK techniques, IOCs and affected entities, with the
+real values restored locally, and a follow-up box below
+it.](docs/images/analysis-conversation.png)
+
+<sup>**2 · Analyze, then restore.** The answer names real hosts and accounts —
+but only placeholders were ever sent. The values are put back locally, after the
+response comes back.</sup>
 
 ## Try it in 30 seconds — no API key needed
 
@@ -835,14 +845,8 @@ locally, and renders it as a colour-coded **verdict card** above the prose.
 into a SOAR incident or case record. Follow-up questions update the card if the
 assessment changes. The parsing is on the *masked* response and tolerant of
 malformed output — a missing or broken block just falls back to plain prose.
-
-![An analysis of the sample SSH brute-force log: a TRUE POSITIVE / CRITICAL
-verdict card with MITRE ATT&CK techniques, IOCs and affected entities, with the
-real values restored locally, and a follow-up box below
-it.](docs/images/analysis-conversation.png)
-
-<sup>The answer above reads in real values — but only placeholders were ever
-sent. Restoration happens locally, after the response comes back.</sup>
+The verdict card is the second screenshot at the [top of this
+README](#log-masker--safe-ai-log-analysis).
 
 ### Persistent entity vault (cross-incident correlation)
 
