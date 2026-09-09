@@ -557,6 +557,46 @@ def test_token_cache_is_never_world_readable():
             m365.CACHE_FILE = real
 
 
+# ---------------------------------------------------------------------------
+# Clickjacking -- the one cross-origin attack the provenance checks do not stop
+# ---------------------------------------------------------------------------
+def test_security_headers():
+    """guard.check() refuses a cross-origin page that *acts*. Nothing in it
+    refuses one that *frames*: the iframe sends the loopback Host this app
+    expects, and afterwards the framed page's own requests are same-origin.
+    Only the browser can decline the frame, and only if the response says so."""
+    h = guard.SECURITY_HEADERS
+    csp = h["Content-Security-Policy"]
+
+    check("framing is refused by CSP", "frame-ancestors 'none'" in csp)
+    check("and by the X-Frame-Options fallback", h["X-Frame-Options"] == "DENY")
+    check("MIME sniffing is off", h["X-Content-Type-Options"] == "nosniff")
+    check("no local URL leaks in a referrer", h["Referrer-Policy"] == "no-referrer")
+
+    # A script-src carrying 'unsafe-inline' would let the CSP advertise a
+    # protection it does not provide. Having none is the honest state until the
+    # inline theme bootstrap in index.html moves out or gets a nonce.
+    check("the CSP claims no script protection it cannot deliver",
+          "unsafe-inline" not in csp)
+
+
+def test_security_headers_are_applied_to_a_response():
+    """The policy is worth nothing if the middleware forgets to attach it."""
+    headers = {}
+    guard.apply_security_headers(headers)
+    for name in guard.SECURITY_HEADERS:
+        check(f"{name} is set on a bare response", name in headers)
+
+    # An explicit value set by a route wins: this fills gaps, it does not
+    # overwrite. A route that needs a stricter CSP must be able to say so.
+    headers = {"Content-Security-Policy": "default-src 'none'"}
+    guard.apply_security_headers(headers)
+    check("an existing header is left alone",
+          headers["Content-Security-Policy"] == "default-src 'none'")
+    check("and the rest are still filled in",
+          headers["X-Frame-Options"] == "DENY")
+
+
 if __name__ == "__main__":
     test_host_check()
     test_allowed_hosts_env()
@@ -578,4 +618,6 @@ if __name__ == "__main__":
     test_endpoint_validation_blocks_ssrf_targets()
     test_user_regex_validation()
     test_token_cache_is_never_world_readable()
+    test_security_headers()
+    test_security_headers_are_applied_to_a_response()
     print("\nAll security tests passed.")
