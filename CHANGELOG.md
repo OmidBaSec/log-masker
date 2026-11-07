@@ -287,6 +287,11 @@ versions follow [Semantic Versioning][semver].
   that advertises a protection it does not provide. Adding a real one is a
   frontend change (a nonce, or moving that bootstrap into a file), tracked
   separately.
+- **Locked dependencies updated past published advisories:** `pyjwt` 2.13.0 →
+  2.15.1 (pulled in by `msal` for the M365 sign-in), `urllib3` 2.7.0 → 2.8.0
+  (under `requests`, which carries every provider call) and `certifi`
+  2026.7.22 → 2026.10.23 (the CA bundle those calls verify against). Only these
+  three pins move; `pip-audit` reports nothing against the lock afterwards.
 
 ## [0.9.0] — 2026-08-25
 
