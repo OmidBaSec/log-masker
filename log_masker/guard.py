@@ -199,3 +199,51 @@ def startup_check(argv: Optional[list] = None) -> Optional[str]:
         "Put it behind an authenticating reverse proxy and set "
         f"{ALLOW_REMOTE_ENV}=1, plus {ALLOWED_HOSTS_ENV}=<your hostname>."
     )
+
+
+# ---------------------------------------------------------------------------
+# Response headers
+# ---------------------------------------------------------------------------
+# The provenance checks above stop a cross-origin page from *acting* on this
+# app. They do not stop it from *framing* it. A GET is only Host-checked, and
+# an iframe of http://127.0.0.1:8888/ sends exactly the Host this app expects,
+# so the frame loads. Once it has, the framed page's own requests are
+# same-origin: Origin and Sec-Fetch-Site are the app's own, and every check in
+# check() passes while the analyst clicks an overlay they cannot see. The
+# attacker still cannot *read* a response cross-origin, but the clicks are real
+# and this app has buttons that clear the vault and spend API credit.
+#
+# Only the browser can refuse to render the frame, and only if it is told to.
+# frame-ancestors is the modern control; X-Frame-Options is the fallback for
+# anything that ignores CSP. Both are sent because each costs one header.
+#
+# There is deliberately NO script-src. index.html sets the theme from an inline
+# <script> before first paint, and the markup carries inline style attributes,
+# so a script-src today would have to say 'unsafe-inline' -- which would let
+# the CSP advertise a protection it does not provide. Adding a real one is a
+# frontend change (a nonce, or moving that bootstrap out), not a header change.
+SECURITY_HEADERS = {
+    # frame-ancestors is the clickjacking control. base-uri and object-src are
+    # free here: nothing in this app sets a <base> or embeds a plugin, so they
+    # close two injection sinks at no compatibility cost.
+    "Content-Security-Policy":
+        "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+    "X-Frame-Options": "DENY",
+    # The static mount serves whatever is in static/. nosniff keeps a browser
+    # from re-interpreting one of those files as script on the app's origin.
+    "X-Content-Type-Options": "nosniff",
+    # A local URL can carry a port and a path worth not leaking outward.
+    "Referrer-Policy": "no-referrer",
+}
+
+
+def apply_security_headers(headers) -> None:
+    """Add SECURITY_HEADERS to `headers`, in place, without overwriting.
+
+    Anything that has already set one of these deliberately keeps its value;
+    this only fills in what is missing. Works on a plain dict and on
+    Starlette's MutableHeaders, which is what the app passes.
+    """
+    for name, value in SECURITY_HEADERS.items():
+        if name not in headers:
+            headers[name] = value
