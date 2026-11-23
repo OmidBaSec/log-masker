@@ -296,12 +296,10 @@ class RateRequest(BaseModel):
 
 
 class TestRequest(BaseModel):
+    # Provider + model only. Endpoints deliberately are NOT accepted here —
+    # see test_connection for why they come from the saved config instead.
     provider: str
     model: str = ""
-    ollama_endpoint: str = ""
-    azure_endpoint: str = ""
-    azure_deployment: str = ""
-    azure_api_version: str = "2024-08-01-preview"
 
 
 # ---------------------------------------------------------------------------
@@ -476,14 +474,20 @@ def delete_key(req: ProviderRequest):
 @app.post("/test")
 def test_connection(req: TestRequest):
     """Send a tiny prompt to verify the provider actually works. Goes through
-    the same logged path as real analyses, so it shows up under Requests."""
+    the same logged path as real analyses, so it shows up under Requests.
+
+    The endpoint is read from the SAVED config, never from this request. The
+    Azure caller sends the stored API key to whatever `azure_endpoint` says, so
+    taking that URL from the request body would turn this route into "hand the
+    key to any host you name" — reachable by anything that gets past the request
+    guard, including script running on this page. Saving the endpoint first is
+    the review step; the Setup panel persists the fields before it calls here."""
     if req.provider not in providers.PROVIDERS:
         raise HTTPException(400, f"Unknown provider: {req.provider}")
+    cfg = load_config()
     if req.provider == "m365copilot":
-        cfg = load_config()
         model = "microsoft-365-copilot"
     else:
-        cfg = req.dict()
         model = req.model or providers.PROVIDERS[req.provider]["default_model"]
     reply = _call_provider_chat(
         cfg, req.provider, model,
@@ -536,7 +540,9 @@ def oauth_callback(request: Request):
     return (f"<html><body style='font-family:sans-serif;background:#0d1117;"
             f"color:#e6edf3;padding:40px'><h2 style='color:{color}'>"
             f"{'✓ Success' if ok else '✗ Error'}</h2><p>{html.escape(msg)}</p>"
-            f"<script>setTimeout(()=>window.close(),2500);</script></body></html>")
+            # The close-the-tab script is a static file, not inline: the CSP
+            # this app sends allows no inline script anywhere.
+            f'<script src="/static/oauth-close.js"></script></body></html>')
 
 
 @app.get("/m365/status")
@@ -627,6 +633,18 @@ def _used_mapping(mapping: dict, *texts: str) -> dict:
     bracket means "[USER_1]" can never match inside "[USER_10]".)"""
     return {ph: real for ph, real in mapping.items()
             if any(ph in t for t in texts)}
+
+
+def _vault_entities(used: dict) -> dict:
+    """The subset of `used` that describes real entities, for the vault.
+
+    [LITERAL_n] aliases stand for text that merely *looked* like a placeholder
+    in the input (see masker._LITERAL_PLACEHOLDER). They are an artefact of this
+    one log, not a thing that recurs across incidents, and writing them into the
+    permanent vault would let anyone who can put a string in a monitored log add
+    entries to it."""
+    return {ph: real for ph, real in used.items()
+            if not ph.startswith("[LITERAL_")}
 
 
 def _vault_context_block(lines: List[str]) -> str:
@@ -1235,7 +1253,7 @@ def analyze(req: AnalyzeRequest):
         # History of the entities that recur from earlier incidents —
         # placeholder statistics only, gathered BEFORE this incident is
         # recorded so "prior" means prior.
-        vault_lines = vault.context_lines(used.keys())
+        vault_lines = vault.context_lines(_vault_entities(used).keys())
         system += _vault_context_block(vault_lines)
 
     conv_id = uuid.uuid4().hex[:12]
@@ -1253,14 +1271,18 @@ def analyze(req: AnalyzeRequest):
         "structured": req.structured, "vault_on": vault_on,
     }
 
-    # 5. Restore real values locally (prose + structured verdict).
-    shaped = _shape_response(raw_response, mapping, req.structured)
+    # 5. Restore real values locally (prose + structured verdict). Only the
+    #    placeholders the model was actually shown are restored: `mapping` is
+    #    cumulative and carries the whole vault, so restoring against it would
+    #    let a placeholder the model invented resolve to an unrelated entity.
+    sent_scope = _used_mapping(mapping, system, masked)
+    shaped = _shape_response(raw_response, sent_scope, req.structured)
 
     # 6. Record this incident in the vault: its entities become part of the
     #    permanent cross-incident memory, and the AI's verdict is attached so
     #    future context can say "verdicts: true_positive ×2".
     if vault_on:
-        vault.record(conv_id, used)
+        vault.record(conv_id, _vault_entities(used))
         v = shaped.get("verdict")
         if v:
             vault.set_verdict(conv_id, v.get("verdict"), v.get("severity"))
@@ -1306,10 +1328,14 @@ def chat_followup(req: FollowUpRequest):
     if conv.get("vault_on"):
         base = {**vault.mapping(), **conv["mapping"]}
         floors = vault.counters()
+    # The question is typed by the analyst, not harvested from a log, and
+    # naming an alias ("tell me more about [USER_3]") is a supported way to ask
+    # a follow-up — so placeholder-shaped text is left alone here.
     masked_q, mapping = masker.mask(question, conv["categories"],
                                     conv["custom_terms"],
                                     store.get_patterns(),
-                                    base, floors, keep_terms=store.get_keep_terms())
+                                    base, floors, keep_terms=store.get_keep_terms(),
+                                    neutralize_placeholders=False)
     # Pre-send leak guard on the masked question (an analyst can paste raw
     # log content into a follow-up too). Nothing is appended or sent while
     # blocked.
@@ -1323,6 +1349,13 @@ def chat_followup(req: FollowUpRequest):
                  if warnings else None)
 
     conv["messages"].append({"role": "user", "content": masked_q})
+    # Placeholders the model has actually been shown across this conversation —
+    # the system prompt and the analyst's turns. Its own previous answers are
+    # deliberately excluded: an alias it invented once must not become
+    # restorable on the next turn.
+    sent_scope = _used_mapping(mapping, conv["system"],
+                               *(m["content"] for m in conv["messages"]
+                                 if m["role"] == "user"))
     try:
         raw_response = _call_provider_chat(load_config(), conv["provider"],
                                            conv["model"], conv["system"],
@@ -1335,7 +1368,8 @@ def chat_followup(req: FollowUpRequest):
     conv["messages"].append({"role": "assistant", "content": raw_response})
     conv["mapping"] = mapping
 
-    shaped = _shape_response(raw_response, mapping, conv.get("structured", False))
+    shaped = _shape_response(raw_response, sent_scope,
+                             conv.get("structured", False))
 
     # The conversation's own entities: placeholders that occur anywhere in the
     # masked transcript (the cumulative mapping also carries the whole vault).
@@ -1345,7 +1379,7 @@ def chat_followup(req: FollowUpRequest):
     # vault's incident record for this conversation up to date.
     if conv.get("vault_on"):
         vault.record(req.conversation_id,
-                     _used_mapping(mapping, masked_q))
+                     _vault_entities(_used_mapping(mapping, masked_q)))
         v = shaped.get("verdict")
         if v:
             vault.set_verdict(req.conversation_id,

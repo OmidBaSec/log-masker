@@ -19,6 +19,9 @@ masked prompt text is ever sent to Microsoft Graph.
 import os
 import re
 import json
+import time
+from collections import OrderedDict
+
 import requests
 from typing import Dict, Optional, Tuple
 
@@ -43,8 +46,24 @@ SCOPES = [
 
 DEFAULT_TZ = "America/New_York"
 
-# In-memory store of in-flight auth code flows, keyed by OAuth `state`.
-_FLOWS: Dict[str, dict] = {}
+# In-memory store of in-flight auth code flows, keyed by OAuth `state`. Each
+# entry holds a PKCE verifier, and each is created by a plain GET /m365/login —
+# a safe method, so the request guard does not require same-origin provenance
+# and any page the analyst visits can trigger one. Bounded and expiring rather
+# than unbounded: a sign-in that has not come back within the window is not
+# coming back, and 32 concurrent ones is already generous for a desktop app.
+_FLOWS: "OrderedDict[str, dict]" = OrderedDict()
+FLOW_TTL_SECONDS = 15 * 60
+MAX_FLOWS = 32
+
+
+def _reap_flows() -> None:
+    """Drop expired flows, then the oldest ones over the cap."""
+    cutoff = time.time() - FLOW_TTL_SECONDS
+    for state in [s for s, f in _FLOWS.items() if f.get("_started", 0) < cutoff]:
+        _FLOWS.pop(state, None)
+    while len(_FLOWS) > MAX_FLOWS:
+        _FLOWS.popitem(last=False)
 
 
 class M365Error(Exception):
@@ -103,16 +122,20 @@ def build_login_url(tenant_id: str, client_id: str, redirect_uri: str) -> str:
         raise M365Error(f"Could not start sign-in (check tenant/client IDs): {e}")
     if "auth_uri" not in flow:
         raise M365Error(f"Could not start sign-in: {flow}")
+    flow["_started"] = time.time()
     _FLOWS[flow["state"]] = flow
+    _reap_flows()
     return flow["auth_uri"]
 
 
 def handle_callback(query: dict, tenant_id: str, client_id: str) -> str:
     """Exchange the authorization code for tokens. Returns the signed-in UPN."""
+    _reap_flows()
     state = query.get("state")
     flow = _FLOWS.pop(state, None)
     if not flow:
         raise M365Error("Sign-in session expired or unknown. Try again.")
+    flow.pop("_started", None)      # our bookkeeping, not part of the MSAL flow
     cache = _load_cache()
     app = _app(tenant_id, client_id, cache)
     result = app.acquire_token_by_auth_code_flow(flow, query)

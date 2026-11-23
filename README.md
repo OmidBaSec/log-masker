@@ -69,7 +69,7 @@ Read this before pointing it at production logs.
 
 Masking is **pattern-based and best-effort**. It recognises the categories
 listed below plus the terms and regexes you add, and it is tested hard (see
-[Tests](#tests) — 589 checks, most of them masking cases). It cannot recognise
+[Tests](#tests) — 814 checks, most of them masking cases). It cannot recognise
 what it has never been taught: an internal codename, an unusual identifier
 format, a customer name written in a way no rule matches. The **pre-send leak
 guard** is an independent second pass that catches many such misses, and the
@@ -899,7 +899,7 @@ python test_credits.py     # pricing and spend accounting
 python test_security.py    # request guard, data paths, secret storage
 python test_cli.py         # launcher: start/stop/status on this OS
 python test_regexlab.py    # regex workbench: diagnosis and suggestions
-node   test_frontend.js    # log-file encoding detection (browser-side)
+node   test_frontend.js    # log-file encoding + HTML escaping (browser-side)
 ```
 
 All of them run from `log_masker_app/` with no test runner and no plugins.

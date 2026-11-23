@@ -217,17 +217,34 @@ def startup_check(argv: Optional[list] = None) -> Optional[str]:
 # frame-ancestors is the modern control; X-Frame-Options is the fallback for
 # anything that ignores CSP. Both are sent because each costs one header.
 #
-# There is deliberately NO script-src. index.html sets the theme from an inline
-# <script> before first paint, and the markup carries inline style attributes,
-# so a script-src today would have to say 'unsafe-inline' -- which would let
-# the CSP advertise a protection it does not provide. Adding a real one is a
-# frontend change (a nonce, or moving that bootstrap out), not a header change.
+# The CSP is also the second line against script injection. Restored answers
+# put unmasked log content back into the page, and log content is written by
+# whoever touched the system that produced it -- a username in a failed logon,
+# a user-agent, a filename. Escaping (see static/render.js) is the first line;
+# script-src 'self' with no 'unsafe-inline' is the second, so that a miss there
+# cannot become script execution against a same-origin app that can read the
+# entity vault. That is why the theme bootstrap lives in static/theme.js and the
+# OAuth callback's close() in static/oauth-close.js: no inline script remains
+# (test_security.py fails if one comes back). style-src keeps 'unsafe-inline'
+# because the markup uses style attributes throughout; that permits no script.
+# connect-src 'self' means an injected fetch cannot post anything it scraped to
+# an outside host; form-action 'none' because the app has no forms.
 SECURITY_HEADERS = {
-    # frame-ancestors is the clickjacking control. base-uri and object-src are
-    # free here: nothing in this app sets a <base> or embeds a plugin, so they
-    # close two injection sinks at no compatibility cost.
-    "Content-Security-Policy":
-        "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+    # frame-ancestors is the clickjacking control. base-uri and object-src
+    # close two injection sinks: nothing in this app sets a <base> or embeds a
+    # plugin.
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "form-action 'none'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'none'; "
+        "object-src 'none'"
+    ),
     "X-Frame-Options": "DENY",
     # The static mount serves whatever is in static/. nosniff keeps a browser
     # from re-interpreting one of those files as script on the app's origin.
