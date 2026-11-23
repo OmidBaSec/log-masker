@@ -10,9 +10,10 @@ by the caller (resolved from the OS keychain), never read here.
 """
 
 import ipaddress
+import os
 import re
 import json
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 from typing import Dict, List, Optional
@@ -148,6 +149,16 @@ BLOCKED_NETWORKS = (
     ipaddress.ip_network("100.64.0.0/10"),    # carrier-grade NAT
 )
 
+# Refused on top of the above once the app is exposed (LOGMASKER_ALLOW_REMOTE).
+# On a desktop these stay allowed: the README documents pointing the Ollama
+# endpoint at "a shared inference box on your network", and that box lives here.
+PRIVATE_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),         # IPv6 unique-local
+)
+
 # Names that resolve to a metadata service without ever looking like one.
 BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal", "metadata.goog", "instance-data",
@@ -155,8 +166,64 @@ BLOCKED_HOSTNAMES = frozenset({
 })
 
 
+def _exposed() -> bool:
+    """Whether the operator has deliberately exposed this app to a network.
+
+    Reads guard.ALLOW_REMOTE_ENV by name rather than importing guard: this
+    module is the provider layer and nothing else here knows about the web
+    server. Keep the two spellings in step."""
+    return os.environ.get("LOGMASKER_ALLOW_REMOTE", "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def _refuse_address(addr, host: str, what: str) -> None:
+    """Raise if `addr` is somewhere this app must not be talked into fetching."""
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    if any(addr in net for net in BLOCKED_NETWORKS):
+        raise ProviderError(
+            f"Refusing to use {host} as the {what}: it is (or resolves to) the "
+            f"link-local or carrier-grade-NAT address {addr}, which is where "
+            "cloud metadata services live.")
+    if _exposed() and not addr.is_loopback \
+            and any(addr in net for net in PRIVATE_NETWORKS):
+        raise ProviderError(
+            f"Refusing to use {host} as the {what}: it resolves to the private "
+            f"address {addr}, and this instance is exposed "
+            "(LOGMASKER_ALLOW_REMOTE), so fetching it would make the app a "
+            "probe for the network behind it.")
+
+
+def _resolved_addresses(host: str):
+    """Every address `host` resolves to, or [] when it cannot be resolved.
+
+    An unresolvable name is allowed through unchanged — an internal name this
+    machine cannot look up (ollama.internal on a laptop off the VPN) is a
+    configuration matter, not an attack. What this closes is the name that
+    resolves perfectly well *to* a blocked address: metadata.<wildcard-dns>.io
+    and friends never look like 169.254.169.254 until you ask."""
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return []
+    out = []
+    for info in infos:
+        try:
+            out.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:
+            continue
+    return out
+
+
 def validate_endpoint(url: str, what: str = "endpoint") -> str:
-    """Return `url` unchanged, or raise ProviderError explaining the refusal."""
+    """Return `url` unchanged, or raise ProviderError explaining the refusal.
+
+    Note the unavoidable gap: a name is resolved here and again by the HTTP
+    client, so a DNS record that changes in between is not caught. Blocking the
+    addresses we can see still removes the whole class of "point the endpoint at
+    the metadata service" without needing a custom transport."""
     url = (url or "").strip()
     if not url:
         raise ProviderError(f"No {what} configured.")
@@ -173,14 +240,14 @@ def validate_endpoint(url: str, what: str = "endpoint") -> str:
             f"Refusing to use {host} as the {what}: that is a cloud metadata "
             "service, not a model endpoint.")
     try:
-        addr = ipaddress.ip_address(host)
+        literal = ipaddress.ip_address(host)
     except ValueError:
-        return url                      # a name we cannot resolve here; allow
-    if any(addr in net for net in BLOCKED_NETWORKS):
-        raise ProviderError(
-            f"Refusing to use {host} as the {what}: link-local and "
-            "carrier-grade-NAT addresses are where cloud metadata services "
-            "live.")
+        literal = None
+    if literal is not None:
+        _refuse_address(literal, host, what)
+        return url
+    for addr in _resolved_addresses(host):
+        _refuse_address(addr, host, what)
     return url
 
 
@@ -273,8 +340,11 @@ def _call_azure(api_key, model, system, messages, cfg) -> str:
     if not endpoint or not deployment:
         raise ProviderError("Azure endpoint and deployment name are required.")
     endpoint = validate_endpoint(endpoint, "Azure endpoint")
-    url = (f"{endpoint}/openai/deployments/{deployment}/chat/completions"
-           f"?api-version={api_version}")
+    # Both of these are free text from the setup form and land in a URL, so
+    # quote them: an unescaped "?" or "#" in a deployment name silently
+    # rewrites the request into something other than what was configured.
+    url = (f"{endpoint}/openai/deployments/{quote(deployment, safe='')}"
+           f"/chat/completions?api-version={quote(api_version, safe='')}")
     data = _post(
         url, {"api-key": api_key, "content-type": "application/json"},
         {"messages": [{"role": "system", "content": system}] + messages},

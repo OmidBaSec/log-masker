@@ -15,76 +15,15 @@ function setStatus(msg, kind = "") {
   el.className = "status" + (kind ? " " + kind : "");
 }
 
-// --- Minimal, safe Markdown-ish rendering -------------------------------
-// Escapes HTML first, then highlights placeholders and applies light markdown
-// (headings, bold, code, bullets). Keeps things readable without a heavy dep.
-function escapeHtml(s) {
-  // Escapes for BOTH text and attribute contexts. Masked/restored values come
-  // straight from the pasted logs — attacker-controlled — and are dropped into
-  // double-quoted attributes (data-keep, data-tip, title, data-real). Leaving
-  // the quotes intact lets a value like  hostname" onmouseover="…  break out of
-  // its attribute and run script in this origin, which holds the entity vault
-  // and the provider API keys. So " and ' must be escaped here too, not only <>.
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-function renderMarkdown(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/^### (.*)$/gm, "<h4>$1</h4>");
-  html = html.replace(/^## (.*)$/gm, "<h3>$1</h3>");
-  html = html.replace(/^# (.*)$/gm, "<h3>$1</h3>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  html = html.replace(/^\s*[-*] (.*)$/gm, "• $1");
-  return html;
-}
-
-// Render masked text with placeholders highlighted in red. Each placeholder is
-// a hover card: when the mapping is known (alias -> real), hovering shows the
-// original local value; otherwise (e.g. the audit view, which only ever holds
-// masked content) it shows a neutral note.
-function renderMasked(text, mapping = {}) {
-  return escapeHtml(text).replace(/\[([A-Z0-9]+_\d+)\]/g, (_m, p1) => {
-    const alias = `[${p1}]`;
-    const real = mapping[alias];
-    const tip = real ? `Original: ${real}` : "Local masked value";
-    const keep = real ? ` data-keep="${escapeHtml(real)}"` : "";
-    return `<span class="masked-placeholder" data-alias="${escapeHtml(alias)}"` +
-           `${keep} data-tip="${escapeHtml(tip)}"` +
-           `${real ? ' title="Click if this should not be masked"' : ""}>` +
-           `${escapeHtml(alias)}</span>`;
-  });
-}
-
-// Wrap restored real values so the user can see what was injected back. Each
-// restored value is a hover card showing the redacted alias it maps to. Uses
-// token substitution so an already-wrapped value can't be re-matched by a
-// shorter value nested inside it.
-function highlightRestored(text, mapping = {}) {
-  let html = renderMarkdown(text);
-  const aliasFor = {};
-  for (const [alias, real] of Object.entries(mapping)) {
-    if (real && !(real in aliasFor)) aliasFor[real] = alias;
-  }
-  const reals = Object.keys(aliasFor).sort((a, b) => b.length - a.length);
-  // Pass 1: replace each real value with a unique, HTML-safe token.
-  reals.forEach((real, i) => {
-    const esc = escapeHtml(real).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    html = html.replace(new RegExp(esc, "g"), `\uE000R${i}\uE000`);
-  });
-  // Pass 2: swap tokens for restored badges (no real text present in pass 1).
-  reals.forEach((real, i) => {
-    const badge = `<span class="restored-badge" data-real="${escapeHtml(real)}"` +
-      ` data-tip="${escapeHtml(`Redacted alias: ${aliasFor[real]}`)}">` +
-      `${escapeHtml(real)}</span>`;
-    html = html.split(`\uE000R${i}\uE000`).join(badge);
-  });
-  return html;
-}
+// --- Rendering helpers ---------------------------------------------------
+// escapeHtml / renderMarkdown / renderMasked / highlightRestored live in
+// render.js so they can be unit-tested without a browser (see test_frontend.js).
+// They are what stands between attacker-influenced log content and the markup
+// of this page, which is not a thing to leave untested.
+const escapeHtml = LogRender.escapeHtml;
+const renderMarkdown = LogRender.renderMarkdown;
+const renderMasked = LogRender.renderMasked;
+const highlightRestored = LogRender.highlightRestored;
 
 // --- Structured verdict card ---------------------------------------------
 const VERDICT_LABEL = {
@@ -169,6 +108,7 @@ const FIELD_NAMES = {
   ARN: "AWS ARN", ASSET: "Cloud / SaaS asset", ORG: "Organisation / tenant",
   GROUP: "Group / policy", SUBJECT: "Topic / operation", KEYID: "Vendor key id",
   ACCTID: "Account / tenant number",
+  LITERAL: "Placeholder-shaped text in the log",
   CUSTOM: "Custom term",
 };
 
@@ -2464,12 +2404,18 @@ $("testBtn").addEventListener("click", async () => {
       });
       CONFIGURED[selectedProvider] = true;
     }
+    // Persist the provider fields first. /test reads the endpoint from the
+    // saved config and never from the request body — an endpoint receives the
+    // stored API key, so it has to be one that was deliberately saved.
+    const extra = collectExtra();
+    if (Object.keys(extra).length && !(await persistConfig(extra))) {
+      throw new Error("Could not save the provider settings to test them");
+    }
     const r = await fetch("/test", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider: selectedProvider,
         model: $("modelSelect").value,
-        ...collectExtra(),
       }),
     });
     const d = await r.json();

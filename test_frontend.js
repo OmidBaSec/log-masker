@@ -8,13 +8,17 @@
 // it runs without a browser.
 
 var LogEncoding;
+var LogRender;
 if (typeof require !== "undefined") {
     LogEncoding = require("./log_masker/static/encoding.js");
+    LogRender = require("./log_masker/static/render.js");
 } else {
     // JavaScriptCore: no module system, so evaluate the file into this scope.
     globalThis.module = undefined;
     eval(readFile("./log_masker/static/encoding.js"));   // eslint-disable-line no-eval
+    eval(readFile("./log_masker/static/render.js"));     // eslint-disable-line no-eval
     LogEncoding = globalThis.LogEncoding;
+    LogRender = globalThis.LogRender;
     if (typeof TextDecoder === "undefined") {
         globalThis.TextDecoder = function (encoding) {
             this.encoding = (encoding || "utf-8").toLowerCase();
@@ -193,61 +197,85 @@ function testDecode() {
     check("UTF-32 is refused with a message, not mojibake", !!r.error);
 }
 
-// --- HTML escaping (app.js) ------------------------------------------------
-// Masked/restored values come straight from the pasted logs, so they are
-// attacker-controlled, and renderMasked drops them into double-quoted HTML
-// attributes. escapeHtml is the one thing standing between a crafted log field
-// and script execution in this origin (which holds the vault and the API keys),
-// so its quote handling is pinned here rather than left to manual testing.
-function readSource(path) {
-    if (typeof require !== "undefined") {
-        return require("fs").readFileSync(path, "utf-8");
-    }
-    return readFile(path);   // JavaScriptCore
-}
-
+// --- HTML rendering: the escaping that stands between attacker-influenced log
+// --- content and the markup of the page ------------------------------------
+//
+// Every value below is one an analyst can genuinely end up with: a username
+// from a failed logon, an Account Name field, a quoted CSV cell. The masker
+// captures them verbatim, and the restored answer puts them back into the page.
 function testEscaping() {
-    var src = readSource("./log_masker/static/app.js");
-    // Pull the two pure, DOM-free functions out of app.js and eval only those
-    // (evaluating the whole file would touch document/$ at load time).
-    function extract(name) {
-        var start = src.indexOf("function " + name + "(");
-        if (start === -1) { throw new Error("could not find " + name); }
-        // These are top-level declarations, so the body ends at the first "}"
-        // that sits alone at the start of a line — no brace-counting through
-        // the regexes and template literals in between.
-        var end = src.indexOf("\n}", start);
-        if (end === -1) { throw new Error("unterminated " + name); }
-        return src.slice(start, end + 2);
-    }
-    eval(extract("escapeHtml"));       // eslint-disable-line no-eval
-    eval(extract("renderMasked"));     // eslint-disable-line no-eval
+    var esc = LogRender.escapeHtml;
 
-    check("escapeHtml neutralizes <, >, &",
-          escapeHtml("<b>&</b>") === "&lt;b&gt;&amp;&lt;/b&gt;");
-    check("escapeHtml escapes the double quote that breaks out of an attribute",
-          escapeHtml('a"b').indexOf('"') === -1);
-    check("escapeHtml escapes the single quote too",
-          escapeHtml("a'b").indexOf("'") === -1);
-
-    // The real attack: a masked value carrying a quote + event handler must not
-    // introduce a live on* attribute when rendered.
-    var evil = { "[USER_1]": 'ACME\\a" onmouseover="steal()' };
-    var html = renderMasked("User: [USER_1]", evil);
-    // A live handler needs a real quote to open it (onmouseover="…). The value
-    // survives as inert text (onmouseover=&quot;…) because the quote is escaped,
-    // so the giveaway is an unescaped  ="  right after the handler name.
-    check("renderMasked does not emit a live onmouseover attribute",
-          !/onmouseover="/.test(html));
-    check("renderMasked keeps the injected quote escaped inside the attribute",
-          html.indexOf('="steal()') === -1 && html.indexOf("&quot;") !== -1);
+    check("escapes &", esc("a & b") === "a &amp; b");
+    check("escapes <", esc("<script>").indexOf("<") === -1);
+    check("escapes double quotes", esc('a"b') === "a&quot;b");
+    check("escapes single quotes", esc("a'b") === "a&#39;b");
+    check("leaves ordinary text alone", esc("WS-FIN-07") === "WS-FIN-07");
+    check("survives null/undefined", esc(null) === "" && esc(undefined) === "");
 }
+
+// A quote that escapes an attribute is an event handler, not a cosmetic bug:
+// the page it lands on can read /vault, which holds every real value the tool
+// has ever unmasked.
+function testAttributeInjection() {
+    // As produced by masking `Account Name:  a" onmouseover=alert(1) b`.
+    var hostile = 'a" onmouseover=alert(1) b';
+    var mapping = { "[USER_1]": hostile };
+    var html = LogRender.highlightRestored(
+        "The account " + hostile + " failed to log in.", mapping);
+
+    // The raw value carries a double quote; if any of it survives verbatim,
+    // that quote closed data-real early and onmouseover became an attribute.
+    check("no raw quote from the value survives into the markup",
+          html.indexOf(hostile) === -1);
+    check("...the quote is entity-encoded instead",
+          html.indexOf("&quot; onmouseover=alert(1)") !== -1);
+    check("the handler text is inert, not an attribute delimiter",
+          html.indexOf('="a" onmouseover') === -1);
+    check("the value is still shown to the analyst",
+          html.indexOf("onmouseover=alert(1)") !== -1);
+
+    // The same value reaching the masked view's hover card.
+    var masked = LogRender.renderMasked("saw [USER_1] here", mapping);
+    check("the hover card escapes it too", masked.indexOf('="a"') === -1);
+    check("...and still names the alias", masked.indexOf("[USER_1]") !== -1);
+
+    // Single quotes close attributes just as well.
+    var sq = { "[HOST_1]": "a' onfocus=alert(1) b" };
+    var sqHtml = LogRender.highlightRestored("host a' onfocus=alert(1) b down", sq);
+    check("single quotes are escaped as well",
+          sqHtml.indexOf("a' onfocus=") === -1);
+    check("...and encoded rather than dropped",
+          sqHtml.indexOf("a&#39; onfocus=") !== -1);
+
+    // Angle brackets were always handled; check the regression stays covered.
+    var tag = { "[USER_2]": "<img src=x onerror=alert(1)>" };
+    var tagHtml = LogRender.highlightRestored(
+        "user <img src=x onerror=alert(1)> seen", tag);
+    check("markup in a restored value is inert",
+          tagHtml.indexOf("<img") === -1);
+}
+
+// Restoring must not corrupt the surrounding answer.
+function testRestoreRoundTrip() {
+    var mapping = { "[USER_1]": "jsmith", "[IP_1]": "10.4.2.19" };
+    var html = LogRender.highlightRestored(
+        "jsmith logged in from 10.4.2.19 twice.", mapping);
+    check("both values are badged",
+          (html.match(/restored-badge/g) || []).length === 2);
+    check("the alias is shown on the card", html.indexOf("[USER_1]") !== -1);
+    check("no substitution token leaks into the output",
+          html.indexOf("") === -1);
+}
+
 
 testDetection();
 testBinaryAndNonAscii();
 testNormalize();
 testDecode();
 testEscaping();
+testAttributeInjection();
+testRestoreRoundTrip();
 
 if (failures) {
     print("\n" + failures + " frontend check(s) FAILED.");

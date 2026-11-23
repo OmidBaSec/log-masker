@@ -503,6 +503,38 @@ def test_endpoint_validation_blocks_ssrf_targets():
     check("gopher:// is refused", refused("gopher://127.0.0.1:11211"))
     check("an empty endpoint is refused", refused(""))
 
+    # A name that resolves to a blocked address never looks like one. Resolution
+    # is stubbed so the check is deterministic and offline.
+    import ipaddress as _ip
+    real_resolve = providers._resolved_addresses
+    real_env = os.environ.get("LOGMASKER_ALLOW_REMOTE")
+    try:
+        providers._resolved_addresses = lambda host: [
+            _ip.ip_address("169.254.169.254")]
+        check("a name resolving to the metadata service is refused",
+              refused("http://metadata.example.test"))
+
+        providers._resolved_addresses = lambda host: [
+            _ip.ip_address("10.1.2.3")]
+        os.environ.pop("LOGMASKER_ALLOW_REMOTE", None)
+        check("a LAN inference box stays allowed on a desktop",
+              not refused("http://ollama.lan:11434"))
+
+        os.environ["LOGMASKER_ALLOW_REMOTE"] = "1"
+        check("...but is refused once the app is exposed to a network",
+              refused("http://ollama.lan:11434"))
+        check("...as is a private address given as a literal",
+              refused("http://192.168.1.10:11434"))
+        providers._resolved_addresses = lambda host: []
+        check("loopback is still allowed when exposed (Ollama in a container)",
+              not refused("http://127.0.0.1:11434"))
+    finally:
+        providers._resolved_addresses = real_resolve
+        if real_env is None:
+            os.environ.pop("LOGMASKER_ALLOW_REMOTE", None)
+        else:
+            os.environ["LOGMASKER_ALLOW_REMOTE"] = real_env
+
 
 def test_user_regex_validation():
     """A saved pattern runs on every future mask, so a catastrophic one does
@@ -574,10 +606,12 @@ def test_security_headers():
     check("no local URL leaks in a referrer", h["Referrer-Policy"] == "no-referrer")
 
     # A script-src carrying 'unsafe-inline' would let the CSP advertise a
-    # protection it does not provide. Having none is the honest state until the
-    # inline theme bootstrap in index.html moves out or gets a nonce.
+    # protection it does not provide. The theme bootstrap now lives in
+    # static/theme.js, so script-src can be 'self' alone; 'unsafe-inline' stays
+    # on style-src only, which permits no script.
+    script_src = csp.split("script-src")[1].split(";")[0]
     check("the CSP claims no script protection it cannot deliver",
-          "unsafe-inline" not in csp)
+          "unsafe-inline" not in script_src)
 
 
 def test_security_headers_are_applied_to_a_response():
@@ -596,6 +630,168 @@ def test_security_headers_are_applied_to_a_response():
     check("and the rest are still filled in",
           headers["X-Frame-Options"] == "DENY")
 
+
+def test_literal_placeholders_in_logs_are_neutralised():
+    """A log line carrying text shaped like one of our placeholders must not be
+    able to claim an alias that belongs to another entity: everything
+    downstream (the vault, the prompt context, the restore) identifies this
+    incident's entities by looking for placeholder shapes in the masked text."""
+    from log_masker import masker
+
+    vault_alias, vault_value = "[USER_5]", "alice"
+    base = {vault_alias: vault_value}
+    log = "sshd: Failed password for user=[USER_5] from 10.1.2.3"
+    masked, mapping = masker.mask(log, ["identities", "network", "secrets"],
+                                  base_mapping=base)
+
+    check("the literal is masked under its own label", "[LITERAL_1]" in masked)
+    check("...and no longer reads as the vault's alias",
+          vault_alias not in masked)
+    check("...so it is not picked up as this incident's entity",
+          vault_alias not in {ph for ph in mapping if ph in masked})
+    check("the original text is restored for the analyst",
+          masker.unmask("saw [LITERAL_1]", mapping) == "saw [USER_5]")
+    check("the vault's value is never reachable through it",
+          vault_value not in masked)
+
+    # The analyst naming an alias in a follow-up is the supported workflow and
+    # must keep working — that text is typed, not harvested from a log.
+    typed, _ = masker.mask("tell me more about [USER_5]", ["identities"],
+                           base_mapping=base, neutralize_placeholders=False)
+    check("a typed follow-up may still name an alias", "[USER_5]" in typed)
+
+
+def test_unmask_never_substitutes_into_its_own_output():
+    """Restoring is one pass over the text. A restored value can itself be
+    placeholder-shaped — that is exactly what [LITERAL_n] holds — and a
+    sequential replace would substitute into what it had just written, turning
+    the analyst's own log text into somebody's real address."""
+    from log_masker import masker
+
+    cascade = {"[LITERAL_1]": "[IP_1]", "[IP_1]": "10.0.0.9"}
+    out = masker.unmask("saw [LITERAL_1] and [IP_1]", cascade)
+    check("the literal restores to the text the log actually held",
+          out == "saw [IP_1] and 10.0.0.9")
+    check("...and is not resolved a second time", "saw 10.0.0.9" not in out)
+
+    # Numbering means one alias is a prefix of another.
+    m = {"[USER_1]": "alice", "[USER_10]": "bob", "[USER_100]": "carol"}
+    check("a shorter alias never eats a longer one",
+          masker.unmask("[USER_100] [USER_10] [USER_1]", m)
+          == "carol bob alice")
+
+    check("an alias with no mapping is left as it is",
+          masker.unmask("who is [USER_9]?", {"[USER_1]": "alice"})
+          == "who is [USER_9]?")
+    check("an empty mapping is a no-op", masker.unmask("[USER_1]", {}) == "[USER_1]")
+
+
+def test_vault_never_records_literal_placeholders():
+    """[LITERAL_n] describes one log's text, not an entity that recurs. Writing
+    it to the permanent vault would let anyone who can put a string in a
+    monitored log add entries to it."""
+    from log_masker import app as appmod
+
+    used = {"[USER_1]": "jsmith", "[LITERAL_1]": "[USER_5]",
+            "[IP_2]": "10.1.2.3"}
+    kept = appmod._vault_entities(used)
+    check("real entities are kept", kept.get("[USER_1]") == "jsmith")
+    check("...and the network one too", "[IP_2]" in kept)
+    check("literal placeholder text is not vaulted", "[LITERAL_1]" not in kept)
+
+
+def test_responses_restore_only_what_was_sent():
+    """The conversation mapping is cumulative and carries the whole vault, so
+    restoring against it would let a placeholder the model invented resolve to
+    an unrelated entity."""
+    from log_masker import app as appmod
+
+    mapping = {"[USER_1]": "jsmith", "[USER_9]": "someone-else"}
+    masked = "login failure for [USER_1]"
+    scope = appmod._used_mapping(mapping, masked)
+    check("the alias that was sent is in scope", "[USER_1]" in scope)
+    check("an alias that was not sent is out of scope", "[USER_9]" not in scope)
+
+    shaped = appmod._shape_response(
+        "[USER_1] failed to log in; so did [USER_9].", scope, False)
+    restored = shaped["ai_response_restored"]
+    check("what was sent is restored", "jsmith" in restored)
+    check("an invented alias stays a placeholder", "someone-else" not in restored)
+    check("...and is left visible as the placeholder it is",
+          "[USER_9]" in restored)
+
+
+def test_test_route_does_not_take_an_endpoint_from_the_request():
+    """/test sends the stored API key to whatever azure_endpoint says. Reading
+    that URL from the request body would make the route "hand the key to any
+    host you name"."""
+    from log_masker import app as appmod
+
+    fields = set(appmod.TestRequest.model_fields)
+    for leaked in ("azure_endpoint", "ollama_endpoint", "azure_deployment",
+                   "azure_api_version"):
+        check(f"/test does not accept {leaked} from the caller",
+              leaked not in fields)
+    check("it still takes the provider", "provider" in fields)
+    check("...and the model to try", "model" in fields)
+
+
+def test_security_headers_are_sent():
+    """Restored answers put unmasked log content back into the page. Escaping is
+    the first line; a CSP that forbids inline script is the second."""
+    csp = guard.SECURITY_HEADERS["Content-Security-Policy"]
+    check("scripts may only come from this origin", "script-src 'self'" in csp)
+    check("...with no inline-script escape hatch",
+          "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0])
+    check("no eval either", "'unsafe-eval'" not in csp)
+    check("an injected fetch cannot reach another host",
+          "connect-src 'self'" in csp)
+    check("the page cannot be framed", "frame-ancestors 'none'" in csp)
+    check("nor have its base URL rewritten", "base-uri 'none'" in csp)
+    check("MIME sniffing is off",
+          guard.SECURITY_HEADERS["X-Content-Type-Options"] == "nosniff")
+
+
+def test_no_inline_script_survives_in_the_shipped_pages():
+    """The CSP above is only true if nothing actually needs an inline script."""
+    import re as _re
+
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "log_masker", "static", "index.html"),
+              encoding="utf-8") as f:
+        page = f.read()
+    inline = [m for m in _re.findall(r"<script([^>]*)>", page)
+              if "src=" not in m]
+    check("index.html has no inline <script>", not inline)
+    check("...and no inline event handlers",
+          not _re.search(r"\son[a-z]+\s*=\s*[\"\']", page))
+
+
+def test_oauth_flows_are_bounded():
+    """Each in-flight flow holds a PKCE verifier and is created by a plain GET,
+    which the request guard does not require provenance for."""
+    import time as _time
+    from log_masker import m365
+
+    saved = dict(m365._FLOWS)
+    try:
+        m365._FLOWS.clear()
+        for i in range(m365.MAX_FLOWS + 20):
+            m365._FLOWS[f"state{i}"] = {"_started": _time.time()}
+        m365._reap_flows()
+        check("the flow map is capped", len(m365._FLOWS) <= m365.MAX_FLOWS)
+        check("...dropping the oldest first", "state0" not in m365._FLOWS)
+
+        m365._FLOWS.clear()
+        m365._FLOWS["stale"] = {"_started": _time.time()
+                                - m365.FLOW_TTL_SECONDS - 1}
+        m365._FLOWS["fresh"] = {"_started": _time.time()}
+        m365._reap_flows()
+        check("an abandoned sign-in expires", "stale" not in m365._FLOWS)
+        check("...while a live one survives", "fresh" in m365._FLOWS)
+    finally:
+        m365._FLOWS.clear()
+        m365._FLOWS.update(saved)
 
 if __name__ == "__main__":
     test_host_check()
@@ -620,4 +816,12 @@ if __name__ == "__main__":
     test_token_cache_is_never_world_readable()
     test_security_headers()
     test_security_headers_are_applied_to_a_response()
+    test_literal_placeholders_in_logs_are_neutralised()
+    test_unmask_never_substitutes_into_its_own_output()
+    test_vault_never_records_literal_placeholders()
+    test_responses_restore_only_what_was_sent()
+    test_test_route_does_not_take_an_endpoint_from_the_request()
+    test_security_headers_are_sent()
+    test_no_inline_script_survives_in_the_shipped_pages()
+    test_oauth_flows_are_bounded()
     print("\nAll security tests passed.")

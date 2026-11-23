@@ -4,24 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Log Masker — Secure AI Operations</title>
-  <!-- Apply the saved theme (or the OS appearance) before first paint, so the
-       page never flashes the wrong theme. -->
-  <script>
-    (function () {
-      var theme = "dark";
-      try {
-        var saved = localStorage.getItem("logmasker.theme");
-        if (saved !== "light" && saved !== "dark") saved = null;  // null = follow the OS
-        theme = saved || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-      } catch (e) { /* storage blocked — stay on the dark default */ }
-      document.documentElement.setAttribute("data-theme", theme);
-      try {
-        if (localStorage.getItem("logmasker.sidebar") === "hidden") {
-          document.documentElement.classList.add("sidebar-hidden");
-        }
-      } catch (e) { /* storage blocked — the sidebar stays visible */ }
-    })();
-  </script>
+  <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -548,6 +531,7 @@
     </div>
   </div>
 
+  <script src="/static/render.js"></script>
   <script src="/static/encoding.js"></script>
   <script src="/static/app.js"></script>
 </body>

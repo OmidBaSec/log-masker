@@ -1,11 +1,13 @@
 # Log Masker container image.
 #
 #   docker build -t log-masker .
-#   docker run -p 8888:8888 -v logmasker-data:/data \
+#   docker run -p 127.0.0.1:8888:8888 -v logmasker-data:/data \
 #              -e LOGMASKER_MASTER_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
 #              -e ANTHROPIC_API_KEY=sk-ant-... log-masker
 #
-# Read the security note at the bottom before exposing this to anything.
+# The published port is bound to 127.0.0.1 on purpose — a bare "-p 8888:8888"
+# publishes on every host interface, and this app has no login. Read the
+# security note at the bottom before changing that.
 
 FROM python:3.13-slim AS build
 

@@ -1135,9 +1135,19 @@ def save_custom_patterns(patterns: List[Dict[str, str]]) -> None:
         json.dump(patterns, f, indent=2)
 
 
+# Labels the app assigns meaning to, which a user pattern must not be able to
+# impersonate. [LITERAL_n] in particular says "this is text that merely looked
+# like a placeholder", and app.py keeps those out of the permanent vault — a
+# user pattern labelled "Literal" would otherwise have its real entities
+# silently dropped from it.
+RESERVED_LABELS = frozenset({"LITERAL"})
+
+
 def _pattern_label(label: str) -> str:
     """Normalize a user label to the [LABEL_n] placeholder alphabet."""
     cleaned = re.sub(r"[^A-Z0-9]", "", label.upper())
+    if cleaned in RESERVED_LABELS:
+        cleaned += "1"          # [LITERAL1_n] — distinct, still readable
     return cleaned or "CUSTOM"
 
 
@@ -1662,11 +1672,12 @@ def _propagate_spans(text: str, spans):
 # user pattern and the catch-all FQDN pattern respectively; calling the result
 # [HOST_1] would tell the reader it is a machine.
 _LABEL_RANK = {
-    "CUSTOM": 0, "EMAIL": 1, "SID": 2, "DN": 3, "APIKEY": 4, "KEYID": 5,
-    "ARN": 6, "SECRET": 7, "ACCTID": 8, "UUID": 9, "MAC": 10, "IP": 11,
-    "IPV6": 12, "PHONE": 13, "ADDRESS": 14, "SERIAL": 15, "ENCODED": 16,
-    "RESOURCE": 17, "USER": 18, "DOMAIN": 19, "ASSET": 20, "ORG": 21,
-    "GROUP": 22, "SUBJECT": 23, "HOST": 24, "CC": 25, "HASH": 26,
+    "LITERAL": -1, "CUSTOM": 0, "EMAIL": 1, "SID": 2, "DN": 3,
+    "APIKEY": 4, "KEYID": 5, "ARN": 6, "SECRET": 7, "ACCTID": 8,
+    "UUID": 9, "MAC": 10, "IP": 11, "IPV6": 12, "PHONE": 13,
+    "ADDRESS": 14, "SERIAL": 15, "ENCODED": 16, "RESOURCE": 17,
+    "USER": 18, "DOMAIN": 19, "ASSET": 20, "ORG": 21, "GROUP": 22,
+    "SUBJECT": 23, "HOST": 24, "CC": 25, "HASH": 26,
 }
 
 
@@ -1761,6 +1772,24 @@ def _accept(label: str, value: str) -> bool:
     return True
 
 
+# Text in the input that is already shaped like one of our placeholders. It is
+# not a placeholder — nothing masked it — but everything downstream identifies
+# "the entities of this log" by looking for placeholder shapes in the masked
+# text, so a log line carrying a literal "[USER_5]" is read as this incident's
+# [USER_5] and picks up whatever real value the vault holds under that alias.
+# Logs are attacker-influenced by definition (a username in a failed logon, a
+# user-agent, a filename), so this is reachable on purpose, not by accident.
+#
+# Masking it under its own label breaks the collision: the model sees an alias
+# that belongs to no other entity, the vault is never told this incident
+# involved someone else's [USER_5], and the analyst still reads the original
+# text back after restore.
+#
+# unmask() uses the same expression from the other direction — "find the things
+# that look like our placeholders" is exactly the question it asks too.
+_PLACEHOLDER_SHAPE = re.compile(r"\[[A-Z0-9]+_\d+\]")
+
+
 def _exact_known_pattern(value: str) -> "re.Pattern":
     """Exact-match pattern for a known value, with word boundaries on the
     alphanumeric edges so short values never mangle the inside of other
@@ -1779,7 +1808,8 @@ def mask(text: str, enabled: List[str],
          base_mapping: Dict[str, str] = None,
          base_counters: Dict[str, int] = None,
          builtin_patches: Dict[str, str] = None,
-         keep_terms: List[str] = None) -> Tuple[str, Dict[str, str]]:
+         keep_terms: List[str] = None,
+         neutralize_placeholders: bool = True) -> Tuple[str, Dict[str, str]]:
     """
     Return (masked_text, mapping) where mapping maps placeholder -> real value.
 
@@ -1806,6 +1836,10 @@ def mask(text: str, enabled: List[str],
     this call only. The regex workbench uses it to answer "would this edit
     have caught the value?" at the pattern's real priority, without saving an
     override, and without a global swap that a concurrent request could see.
+    `neutralize_placeholders` re-masks text that already looks like one of our
+    placeholders (see _PLACEHOLDER_SHAPE) so untrusted input cannot claim an
+    alias that belongs to another entity. Turn it OFF only for text the analyst
+    typed, where naming an alias ("tell me more about [USER_3]") is the point.
     """
     enabled_set = set(enabled)
 
@@ -1844,6 +1878,11 @@ def mask(text: str, enabled: List[str],
         m = re.fullmatch(r"\[([A-Z0-9]+)_\d+\]", ph)
         patterns.insert(0, ("known", m.group(1) if m else "CUSTOM",
                             _exact_known_pattern(real)))
+    # Ahead of every one of the above: a literal "[USER_5]" in the input must
+    # not be left to pass through and be mistaken downstream for an alias this
+    # run produced.
+    if neutralize_placeholders:
+        patterns.insert(0, ("custom", "LITERAL", _PLACEHOLDER_SHAPE))
 
     # Collect non-overlapping spans to replace: (start, end, real_value, label).
     spans: List[Tuple[int, int, str, str]] = []
@@ -2003,10 +2042,22 @@ def mask(text: str, enabled: List[str],
 
 
 def unmask(text: str, mapping: Dict[str, str]) -> str:
-    """Replace every placeholder in `text` with its real value."""
+    """Replace every placeholder in `text` with its real value.
+
+    One pass over the text, not one replace() per placeholder. A restored value
+    can itself be placeholder-shaped — a log line that literally contained
+    "[IP_1]" is masked as [LITERAL_n] and comes back as exactly that text — and
+    a sequential replace would then substitute into what it had just written,
+    resolving the analyst's own log text to somebody's real address.
+
+    Matching the placeholder *shape* and looking the match up, rather than
+    building an alternation of the keys, keeps this O(len(text)) instead of
+    O(len(mapping)) per call: verdict.restore() unmasks every string leaf of the
+    verdict separately, so a per-key cost is paid dozens of times per response.
+    Every key mask() produces has this shape (labels are [A-Z0-9]+, see
+    _pattern_label), and a key that does not is simply not one of our
+    placeholders — it is left in place rather than matched by accident."""
     if not mapping:
         return text
-    # Longest placeholder first avoids any partial-overlap surprises.
-    for placeholder in sorted(mapping, key=len, reverse=True):
-        text = text.replace(placeholder, mapping[placeholder])
-    return text
+    return _PLACEHOLDER_SHAPE.sub(
+        lambda m: mapping.get(m.group(0), m.group(0)), text)
